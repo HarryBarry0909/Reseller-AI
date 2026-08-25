@@ -88,30 +88,91 @@ export async function POST(request: Request) {
 
 
     // --------------------------------
-    // CONVERT IMAGES
+    // CONVERT / VALIDATE IMAGES
     // --------------------------------
 
     const imageInputs = [];
+
+    const allowedMimeTypes = new Set([
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ]);
 
     for (const file of files) {
       const arrayBuffer =
         await file.arrayBuffer();
 
-      const base64 =
-        Buffer.from(
-          arrayBuffer
-        ).toString("base64");
+      const bytes =
+        new Uint8Array(arrayBuffer);
 
-      const mimeType =
-        file.type ||
-        "image/jpeg";
+      if (bytes.length === 0) {
+        throw new Error(
+          `The image "${file.name || "uploaded file"}" is empty.`
+        );
+      }
+
+      // Detect the actual file format from its binary signature.
+      const isJpeg =
+        bytes.length >= 3 &&
+        bytes[0] === 0xff &&
+        bytes[1] === 0xd8 &&
+        bytes[2] === 0xff;
+
+      const isPng =
+        bytes.length >= 8 &&
+        bytes[0] === 0x89 &&
+        bytes[1] === 0x50 &&
+        bytes[2] === 0x4e &&
+        bytes[3] === 0x47 &&
+        bytes[4] === 0x0d &&
+        bytes[5] === 0x0a &&
+        bytes[6] === 0x1a &&
+        bytes[7] === 0x0a;
+
+      const isWebp =
+        bytes.length >= 12 &&
+        bytes[0] === 0x52 &&
+        bytes[1] === 0x49 &&
+        bytes[2] === 0x46 &&
+        bytes[3] === 0x46 &&
+        bytes[8] === 0x57 &&
+        bytes[9] === 0x45 &&
+        bytes[10] === 0x42 &&
+        bytes[11] === 0x50;
+
+      let mimeType = "";
+
+      if (isJpeg) {
+        mimeType = "image/jpeg";
+      } else if (isPng) {
+        mimeType = "image/png";
+      } else if (isWebp) {
+        mimeType = "image/webp";
+      } else {
+        throw new Error(
+          `Unsupported image format: ${file.name || "uploaded file"}. Please use a JPG, PNG or WebP photo.`
+        );
+      }
+
+      if (!allowedMimeTypes.has(mimeType)) {
+        throw new Error(
+          `Unsupported image format: ${file.name || "uploaded file"}. Please use a JPG, PNG or WebP photo.`
+        );
+      }
+
+      const base64 =
+        Buffer.from(bytes).toString("base64");
+
+      const imageUrl =
+        `data:${mimeType};base64,${base64}`;
 
       imageInputs.push({
         type:
           "input_image" as const,
 
         image_url:
-          `data:${mimeType};base64,${base64}`,
+          imageUrl,
 
         detail:
           "high" as const,
@@ -1389,35 +1450,29 @@ Use EXACTLY this structure:
     });
 
   } catch (error) {
-    // Keep the full error in Vercel logs so mobile/production
-    // failures can be diagnosed instead of returning a vague error.
-    console.error("================================");
-    console.error("RESELLER AI API ERROR");
-    console.error("Error:", error);
+
     console.error(
-      "Message:",
+      "RESELLER AI API ERROR:",
+      error
+    );
+
+    console.error(
+      "RESELLER AI API ERROR MESSAGE:",
       error instanceof Error
         ? error.message
         : String(error)
     );
-    console.error(
-      "Stack:",
-      error instanceof Error
-        ? error.stack
-        : "No stack available"
-    );
-    console.error("================================");
-
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unknown API error.";
 
     return NextResponse.json(
       {
         success: false,
-        error: message,
+
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown API error.",
       },
+
       { status: 500 }
     );
   }

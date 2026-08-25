@@ -1,11 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
-import { Lexend } from "next/font/google";
+import { useRouter } from "next/navigation";
 
-
-const lexend = Lexend({ subsets: ["latin"] });
 
 type SizeData = {
   detected_value: string;
@@ -101,7 +98,6 @@ type AIResult = {
 export default function AddItem() {
 
   const router = useRouter();
-  const pathname = usePathname();
 
 
   // ---------------------------------------
@@ -202,6 +198,115 @@ export default function AddItem() {
 
 
   // ---------------------------------------
+  // IMAGE PREPARATION
+  // ---------------------------------------
+
+  async function prepareImageForUpload(
+    file: File
+  ): Promise<File> {
+    const type =
+      file.type?.toLowerCase().split(";")[0] || "";
+
+    const supported =
+      type === "image/jpeg" ||
+      type === "image/png" ||
+      type === "image/webp";
+
+    // Normal browser-supported formats can be uploaded directly.
+    if (supported) {
+      return file;
+    }
+
+    // Some phones (especially iPhones) can provide HEIC/HEIF or
+    // another browser-specific image type. Try to decode it in the
+    // browser and convert it to JPEG before sending it to the API.
+    const objectUrl = URL.createObjectURL(file);
+
+    try {
+      const image = await new Promise<HTMLImageElement>(
+        (resolve, reject) => {
+          const img = new Image();
+
+          img.onload = () => resolve(img);
+          img.onerror = () =>
+            reject(
+              new Error(
+                "This phone image format could not be converted. Please use a JPG, PNG or WebP photo."
+              )
+            );
+
+          img.src = objectUrl;
+        }
+      );
+
+      const maxDimension = 2400;
+
+      const scale = Math.min(
+        1,
+        maxDimension /
+          Math.max(image.naturalWidth, image.naturalHeight)
+      );
+
+      const width = Math.max(
+        1,
+        Math.round(image.naturalWidth * scale)
+      );
+
+      const height = Math.max(
+        1,
+        Math.round(image.naturalHeight * scale)
+      );
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+
+      const context = canvas.getContext("2d");
+
+      if (!context) {
+        throw new Error(
+          "Your browser could not prepare this photo. Please use a JPG, PNG or WebP image."
+        );
+      }
+
+      context.drawImage(image, 0, 0, width, height);
+
+      const blob = await new Promise<Blob | null>(
+        resolve =>
+          canvas.toBlob(
+            resolve,
+            "image/jpeg",
+            0.88
+          )
+      );
+
+      if (!blob) {
+        throw new Error(
+          "Your browser could not prepare this photo. Please try a JPG or PNG image."
+        );
+      }
+
+      const baseName =
+        file.name
+          .replace(/\.[^/.]+$/, "")
+          .replace(/[^a-zA-Z0-9_-]/g, "_") ||
+        "photo";
+
+      return new File(
+        [blob],
+        `${baseName}.jpg`,
+        {
+          type: "image/jpeg",
+          lastModified: Date.now(),
+        }
+      );
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+
+  // ---------------------------------------
   // AI ANALYSIS
   // ---------------------------------------
 
@@ -229,37 +334,88 @@ export default function AddItem() {
       const formData =
         new FormData();
 
+      // Convert any phone-specific image format to a normal JPEG
+      // before it reaches the server/OpenAI.
+      for (const photo of photos) {
+        const preparedPhoto =
+          await prepareImageForUpload(photo);
 
-      photos.forEach(
-        photo => {
-
-          formData.append(
-            "files",
-            photo
-          );
-
-        }
-      );
-
+        formData.append(
+          "files",
+          preparedPhoto,
+          preparedPhoto.name
+        );
+      }
 
       formData.append(
         "purchase_price",
         purchasePrice || "0"
       );
 
+      formData.append(
+        "dispatch_time",
+        dispatchTime
+      );
+
+      formData.append(
+        "packaging_type",
+        packagingType
+      );
+
+      formData.append(
+        "packaging_condition",
+        packagingCondition
+      );
+
+      formData.append(
+        "item_status",
+        itemStatus
+      );
+
+      formData.append(
+        "additional_notes",
+        additionalNotes
+      );
+
+      // Build an absolute URL from the live Vercel origin.
+      // This avoids browser-specific issues with relative API URLs.
+      const apiUrl =
+        new URL(
+          "/api/analyse",
+          window.location.origin
+        ).toString();
 
       const response =
-  await fetch(
-    "/api/analyse",
-    {
-      method: "POST",
-      body: formData,
-    }
-  );
+        await fetch(
+          apiUrl,
+          {
+            method: "POST",
+            body: formData,
+            cache: "no-store",
+          }
+        );
 
+      const responseText =
+        await response.text();
 
-      const data =
-        await response.json();
+      let data: any;
+
+      try {
+        data =
+          responseText
+            ? JSON.parse(responseText)
+            : null;
+      } catch {
+        throw new Error(
+          `Analysis server returned an invalid response (${response.status}).`
+        );
+      }
+
+      if (!data) {
+        throw new Error(
+          `Analysis server returned no response (${response.status}).`
+        );
+      }
 
 
       console.log(
@@ -288,24 +444,7 @@ export default function AddItem() {
       }
 
 
-      const safePricing = data.pricing ?? {
-        market_estimate: 0,
-        quick_sale: 0,
-        normal_sale: 0,
-        slow_sale: 0,
-        recommended: 0,
-        estimated_sale_time: "N/A",
-        reasoning: "Pricing data was not returned by the AI for this item.",
-        profit_quick: null,
-        profit_normal: null,
-        profit_slow: null,
-        roi_quick: null,
-        roi_normal: null,
-        roi_slow: null,
-        verdict: "N/A",
-      };
-
-      setResult({ ...data, pricing: safePricing });
+      setResult(data);
 
 
     } catch (err) {
@@ -456,16 +595,18 @@ export default function AddItem() {
     };
 
 
-    // Store the AI result for the Item Specifics page.
-    const resultJson = JSON.stringify(result);
-    const configJson = JSON.stringify(config);
+    // Store the AI result temporarily.
+    sessionStorage.setItem(
+      "reseller_ai_result",
+      JSON.stringify(result)
+    );
 
-    sessionStorage.setItem("reseller_ai_result", resultJson);
-    sessionStorage.setItem("reseller_ai_config", configJson);
 
-    // Fallback for browsers where the session is lost during navigation.
-    localStorage.setItem("reseller_ai_result", resultJson);
-    localStorage.setItem("reseller_ai_config", configJson);
+    // Store the seller's configuration.
+    sessionStorage.setItem(
+      "reseller_ai_config",
+      JSON.stringify(config)
+    );
 
 
     // Move to the Item Specifics page.
@@ -511,29 +652,29 @@ export default function AddItem() {
 
   return (
 
-    <main className={`${lexend.className} min-h-screen pb-24 lg:pb-8 bg-[#f4f4f5] px-3 py-4 text-zinc-900 sm:p-6 lg:p-8`}>
+    <main className="min-h-screen bg-zinc-100 p-8 text-zinc-900">
 
-      <div className="mx-auto max-w-[1450px]">
+      <div className="mx-auto max-w-7xl">
 
 
         {/* HEADER */}
 
-        <div className="mb-5 sm:mb-8">
+        <div className="mb-8">
 
           <a
             href="/"
-            className="text-sm font-medium text-[#5540c8] transition hover:text-[#4936b5]"
+            className="text-sm text-zinc-500 hover:text-zinc-900"
           >
             ← Back to Dashboard
           </a>
 
 
-          <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:mt-5 sm:text-[29px]">
+          <h1 className="mt-5 text-3xl font-bold">
             Add Item
           </h1>
 
 
-          <p className="mt-1 text-sm text-zinc-400">
+          <p className="mt-1 text-zinc-500">
             Photograph your item and let Reseller AI
             identify, list and price it.
           </p>
@@ -543,7 +684,7 @@ export default function AddItem() {
 
         {/* PHOTOS */}
 
-        <section className="rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+        <section className="rounded-2xl border bg-white p-6">
 
           <div className="flex justify-between">
 
@@ -561,7 +702,7 @@ export default function AddItem() {
             </div>
 
 
-            <div className="rounded-full bg-[#f4f4f5] px-3 py-1.5 text-[10px] font-bold text-zinc-500">
+            <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs">
 
               {photos.length}/5
 
@@ -573,7 +714,7 @@ export default function AddItem() {
           {!result &&
             photos.length < 5 && (
 
-              <label className="mt-5 flex min-h-36 cursor-pointer sm:min-h-48 flex-col items-center justify-center rounded-2xl border-2 border-dashed border-zinc-300 bg-zinc-50 hover:bg-[#f4f4f5]">
+              <label className="mt-5 flex min-h-48 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-zinc-300 bg-zinc-50 hover:bg-zinc-100">
 
                 <div className="text-4xl">
                   📸
@@ -608,7 +749,7 @@ export default function AddItem() {
 
           {photos.length > 0 && (
 
-            <div className="mt-4 grid sm:mt-5 grid-cols-2 gap-4 sm:grid-cols-5">
+            <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-5">
 
               {photos.map(
                 (photo, index) => (
@@ -668,7 +809,7 @@ export default function AddItem() {
 
         {/* PURCHASE PRICE */}
 
-        <section className="mt-6 rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+        <section className="mt-6 rounded-2xl border bg-white p-6">
 
           <h2 className="font-semibold">
             Purchase Price
@@ -708,11 +849,11 @@ export default function AddItem() {
 
         {!result && (
 
-          <section className="mt-6 rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+          <section className="mt-6 rounded-2xl border bg-white p-6">
 
             <div>
 
-              <h2 className="text-lg font-semibold sm:text-xl">
+              <h2 className="text-xl font-bold">
                 Listing Configuration
               </h2>
 
@@ -725,7 +866,7 @@ export default function AddItem() {
             </div>
 
 
-            <div className="mt-4 grid sm:mt-6 gap-5 md:grid-cols-2">
+            <div className="mt-6 grid gap-5 md:grid-cols-2">
 
 
               {/* DISPATCH */}
@@ -930,7 +1071,7 @@ export default function AddItem() {
                     )
                 }
                 placeholder="Anything else you want to remember about this item..."
-                className="mt-2 min-h-24 w-full sm:min-h-28 rounded-xl border p-4 text-sm outline-none focus:border-zinc-900"
+                className="mt-2 min-h-28 w-full rounded-xl border p-4 text-sm outline-none focus:border-zinc-900"
               />
 
             </div>
@@ -944,7 +1085,7 @@ export default function AddItem() {
 
         {error && (
 
-          <div className="mt-6 rounded-[20px] border border-red-100 bg-red-50 p-5 text-red-700">
+          <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-5 text-red-700">
 
             <strong>
               Analysis failed
@@ -964,12 +1105,12 @@ export default function AddItem() {
 
         {isAnalysing && (
 
-          <section className="mt-6 rounded-[24px] bg-[#24232c] p-6 text-center text-white sm:p-10 shadow-[0_8px_30px_rgba(30,28,40,0.12)]">
+          <section className="mt-6 rounded-2xl bg-zinc-900 p-10 text-center text-white">
 
             <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-zinc-600 border-t-white" />
 
 
-            <h2 className="mt-4 text-lg font-semibold sm:text-xl sm:mt-6 sm:text-2xl">
+            <h2 className="mt-6 text-2xl font-bold">
               Reseller AI is analysing...
             </h2>
 
@@ -988,18 +1129,18 @@ export default function AddItem() {
 
         {result && (
 
-          <div className="mt-4 space-y-4 sm:mt-6 sm:space-y-6">
+          <div className="mt-6 space-y-6">
 
 
             {/* IDENTIFICATION */}
 
-            <section className="rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+            <section className="rounded-2xl border bg-white p-6">
 
               <div className="flex items-start justify-between">
 
                 <div>
 
-                  <h2 className="text-[29px] font-semibold tracking-tight">
+                  <h2 className="text-2xl font-bold">
                     Product Identification
                   </h2>
 
@@ -1025,7 +1166,7 @@ export default function AddItem() {
               </div>
 
 
-              <div className="mt-4 grid sm:mt-6 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
 
                 {[
                   [
@@ -1077,10 +1218,10 @@ export default function AddItem() {
                       key={
                         label as string
                       }
-                      className="rounded-2xl bg-zinc-50 p-4"
+                      className="rounded-xl bg-zinc-50 p-4"
                     >
 
-                      <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                      <p className="text-xs uppercase text-zinc-400">
                         {label}
                       </p>
 
@@ -1117,13 +1258,13 @@ export default function AddItem() {
 
             {/* SIZE */}
 
-            <section className="rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+            <section className="rounded-2xl border bg-white p-6">
 
               <div className="flex items-start justify-between">
 
                 <div>
 
-                  <h2 className="text-lg font-semibold sm:text-xl">
+                  <h2 className="text-xl font-bold">
                     Size Conversion
                   </h2>
 
@@ -1136,7 +1277,7 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-full bg-[#f4f4f5] px-3 py-1.5 text-[10px] font-bold text-zinc-500">
+                <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs">
 
                   {percent(
                     result.product.size.confidence
@@ -1149,16 +1290,16 @@ export default function AddItem() {
               </div>
 
 
-              <div className="mt-4 grid sm:mt-5 gap-4 md:grid-cols-4">
+              <div className="mt-5 grid gap-4 md:grid-cols-4">
 
-                <div className="rounded-2xl bg-zinc-50 p-5">
+                <div className="rounded-xl bg-zinc-50 p-5">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     Detected
                   </p>
 
 
-                  <p className="mt-1 text-xl font-semibold tracking-tight">
+                  <p className="mt-1 text-xl font-bold">
                     {
                       result.product.size
                         .detected_value
@@ -1176,14 +1317,14 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-2xl bg-zinc-50 p-5">
+                <div className="rounded-xl bg-zinc-50 p-5">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     🇬🇧 UK
                   </p>
 
 
-                  <p className="mt-1 text-xl font-semibold tracking-tight">
+                  <p className="mt-1 text-xl font-bold">
                     {
                       result.product.size.uk
                     }
@@ -1192,14 +1333,14 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-2xl bg-zinc-50 p-5">
+                <div className="rounded-xl bg-zinc-50 p-5">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     🇺🇸 US
                   </p>
 
 
-                  <p className="mt-1 text-xl font-semibold tracking-tight">
+                  <p className="mt-1 text-xl font-bold">
                     {
                       result.product.size.us
                     }
@@ -1208,14 +1349,14 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-2xl bg-zinc-50 p-5">
+                <div className="rounded-xl bg-zinc-50 p-5">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     🇪🇺 EU
                   </p>
 
 
-                  <p className="mt-1 text-xl font-semibold tracking-tight">
+                  <p className="mt-1 text-xl font-bold">
                     {
                       result.product.size.eu
                     }
@@ -1230,13 +1371,13 @@ export default function AddItem() {
 
             {/* CONDITION */}
 
-            <section className="rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+            <section className="rounded-2xl border bg-white p-6">
 
               <div className="flex items-start justify-between">
 
                 <div>
 
-                  <h2 className="text-lg font-semibold sm:text-xl">
+                  <h2 className="text-xl font-bold">
                     Condition
                   </h2>
 
@@ -1251,7 +1392,7 @@ export default function AddItem() {
 
                 <div className="text-right">
 
-                  <p className="text-lg font-semibold sm:text-xl">
+                  <p className="text-xl font-bold">
                     {
                       result.product.condition
                         .overall
@@ -1346,9 +1487,9 @@ export default function AddItem() {
 
             {/* EBAY LISTING */}
 
-            <section className="rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+            <section className="rounded-2xl border bg-white p-6">
 
-              <h2 className="text-[29px] font-semibold tracking-tight">
+              <h2 className="text-2xl font-bold">
                 eBay Listing
               </h2>
 
@@ -1398,7 +1539,7 @@ export default function AddItem() {
                   defaultValue={
                     result.listing.description
                   }
-                  className="mt-2 min-h-56 w-full sm:min-h-96 rounded-xl border p-4 text-sm leading-7 outline-none focus:border-zinc-900"
+                  className="mt-2 min-h-96 w-full rounded-xl border p-4 text-sm leading-7 outline-none focus:border-zinc-900"
                 />
 
               </div>
@@ -1408,13 +1549,13 @@ export default function AddItem() {
 
             {/* PRICING */}
 
-            <section className="rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+            <section className="rounded-2xl border bg-white p-6">
 
               <div className="flex items-start justify-between">
 
                 <div>
 
-                  <h2 className="text-[29px] font-semibold tracking-tight">
+                  <h2 className="text-2xl font-bold">
                     Pricing Analysis
                   </h2>
 
@@ -1427,14 +1568,14 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-xl bg-[#f4f4f5] px-4 py-2 text-center">
+                <div className="rounded-xl bg-zinc-100 px-4 py-2 text-center">
 
                   <p className="text-xs text-zinc-500">
                     Recommended
                   </p>
 
 
-                  <p className="text-lg font-semibold sm:text-xl">
+                  <p className="text-xl font-bold">
                     {money(
                       result.pricing
                         .recommended
@@ -1446,19 +1587,19 @@ export default function AddItem() {
               </div>
 
 
-              <div className="mt-4 grid sm:mt-6 gap-4 md:grid-cols-3">
+              <div className="mt-6 grid gap-4 md:grid-cols-3">
 
 
                 {/* QUICK */}
 
-                <div className="rounded-2xl bg-zinc-50 p-5">
+                <div className="rounded-xl bg-zinc-50 p-5">
 
                   <p className="font-semibold">
                     ⚡ Quick Sale
                   </p>
 
 
-                  <p className="mt-2 text-2xl font-semibold sm:text-3xl">
+                  <p className="mt-2 text-3xl font-bold">
                     {money(
                       result.pricing
                         .quick_sale
@@ -1510,7 +1651,7 @@ export default function AddItem() {
                   </p>
 
 
-                  <p className="mt-2 text-2xl font-semibold sm:text-3xl">
+                  <p className="mt-2 text-3xl font-bold">
                     {money(
                       result.pricing
                         .normal_sale
@@ -1555,14 +1696,14 @@ export default function AddItem() {
 
                 {/* SLOW */}
 
-                <div className="rounded-2xl bg-zinc-50 p-5">
+                <div className="rounded-xl bg-zinc-50 p-5">
 
                   <p className="font-semibold">
                     🐢 Slow Sale
                   </p>
 
 
-                  <p className="mt-2 text-2xl font-semibold sm:text-3xl">
+                  <p className="mt-2 text-3xl font-bold">
                     {money(
                       result.pricing
                         .slow_sale
@@ -1607,16 +1748,16 @@ export default function AddItem() {
               </div>
 
 
-              <div className="mt-4 grid sm:mt-6 gap-4 md:grid-cols-2">
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
 
-                <div className="rounded-2xl bg-zinc-50 p-5">
+                <div className="rounded-xl bg-zinc-50 p-5">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     Estimated Sale Time
                   </p>
 
 
-                  <p className="mt-1 text-xl font-semibold tracking-tight">
+                  <p className="mt-1 text-xl font-bold">
                     {
                       result.pricing
                         .estimated_sale_time
@@ -1626,14 +1767,14 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-2xl bg-zinc-50 p-5">
+                <div className="rounded-xl bg-zinc-50 p-5">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     Purchase Verdict
                   </p>
 
 
-                  <p className="mt-1 text-xl font-semibold tracking-tight">
+                  <p className="mt-1 text-xl font-bold">
                     {
                       result.pricing
                         .verdict
@@ -1645,7 +1786,7 @@ export default function AddItem() {
               </div>
 
 
-              <div className="mt-5 rounded-2xl border border-amber-100 bg-amber-50 p-5 text-sm text-amber-800">
+              <div className="mt-5 rounded-xl bg-yellow-50 p-4 text-sm text-yellow-800">
 
                 ⚠️{" "}
 
@@ -1661,11 +1802,11 @@ export default function AddItem() {
 
             {/* LISTING CONFIGURATION SUMMARY */}
 
-            <section className="rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)] sm:rounded-[24px] sm:p-6">
+            <section className="rounded-2xl border bg-white p-6">
 
               <div>
 
-                <h2 className="text-lg font-semibold sm:text-xl">
+                <h2 className="text-xl font-bold">
                   Listing Configuration
                 </h2>
 
@@ -1678,12 +1819,12 @@ export default function AddItem() {
               </div>
 
 
-              <div className="mt-4 grid sm:mt-5 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
 
 
-                <div className="rounded-2xl bg-zinc-50 p-4">
+                <div className="rounded-xl bg-zinc-50 p-4">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     Dispatch
                   </p>
 
@@ -1695,9 +1836,9 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-2xl bg-zinc-50 p-4">
+                <div className="rounded-xl bg-zinc-50 p-4">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     Packaging
                   </p>
 
@@ -1709,9 +1850,9 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-2xl bg-zinc-50 p-4">
+                <div className="rounded-xl bg-zinc-50 p-4">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     Item Status
                   </p>
 
@@ -1723,9 +1864,9 @@ export default function AddItem() {
                 </div>
 
 
-                <div className="rounded-2xl bg-zinc-50 p-4">
+                <div className="rounded-xl bg-zinc-50 p-4">
 
-                  <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-zinc-400">
+                  <p className="text-xs uppercase text-zinc-400">
                     Purchase Price
                   </p>
 
@@ -1763,7 +1904,7 @@ export default function AddItem() {
                 onClick={
                   goToItemSpecifics
                 }
-                className="rounded-full bg-[#5540c8] px-8 py-3 font-semibold text-white shadow-sm transition hover:bg-[#4936b5]"
+                className="rounded-xl bg-zinc-900 px-8 py-3 font-semibold text-white hover:bg-zinc-800"
               >
                 Item Specifics →
               </button>
@@ -1780,7 +1921,7 @@ export default function AddItem() {
         {!result &&
           !isAnalysing && (
 
-            <div className="sticky bottom-3 z-20 mt-4 flex justify-end rounded-2xl border border-zinc-200/80 bg-white/95 p-2 shadow-lg backdrop-blur sm:static sm:mt-6 sm:border-0 sm:bg-transparent sm:p-0 sm:shadow-none sm:backdrop-blur-0">
+            <div className="mt-6 flex justify-end">
 
               <button
                 type="button"
@@ -1790,7 +1931,7 @@ export default function AddItem() {
                 disabled={
                   photos.length === 0
                 }
-                className="rounded-full bg-[#5540c8] px-8 py-3 font-semibold text-white shadow-sm transition hover:bg-[#4936b5] disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-xl bg-zinc-900 px-8 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Analyse Item →
               </button>
@@ -1800,45 +1941,13 @@ export default function AddItem() {
           )}
 
 
-        <p className="mt-5 text-center sm:mt-8 text-xs text-zinc-400">
+        <p className="mt-8 text-center text-xs text-zinc-400">
           Reseller AI • Version 0.2.0
         </p>
 
 
       </div>
 
-
-      {/* Mobile app navigation — matches the Dashboard exactly */}
-      <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200 bg-white/95 px-2 pb-[max(8px,env(safe-area-inset-bottom))] pt-2 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] backdrop-blur lg:hidden">
-        <div className="mx-auto grid max-w-md grid-cols-5 gap-1">
-          {[
-            ["⌂", "Home", "/"],
-            ["＋", "Add", "/add"],
-            ["▣", "Stock", "/inventory"],
-            ["◇", "Listings", "/listings"],
-            ["£", "Sales", "/sales"],
-          ].map(([icon, label, href]) => {
-            const active =
-              (href === "/" && pathname === "/") ||
-              (href !== "/" && pathname.startsWith(href));
-
-            return (
-              <a
-                key={href}
-                href={href}
-                className={`flex min-h-14 flex-col items-center justify-center rounded-xl text-[10px] font-semibold transition ${
-                  active
-                    ? "bg-zinc-900 text-white"
-                    : "text-zinc-400 hover:bg-[#f4f4f5]"
-                }`}
-              >
-                <span className="text-lg leading-none">{icon}</span>
-                <span className="mt-1">{label}</span>
-              </a>
-            );
-          })}
-        </div>
-      </nav>
     </main>
 
   );
