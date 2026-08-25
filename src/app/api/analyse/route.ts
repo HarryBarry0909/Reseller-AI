@@ -9,176 +9,81 @@ const MODEL = "gpt-5.4-mini";
 
 export async function POST(request: Request) {
   try {
-    const formData = await request.formData();
+    const body = await request.json();
 
-    const files = formData
-      .getAll("files")
-      .filter(
-        (item): item is File =>
-          item instanceof File
-      );
+    const imageUrls: string[] = Array.isArray(body?.image_urls)
+      ? body.image_urls.filter(
+          (url: unknown): url is string =>
+            typeof url === "string" &&
+            /^https?:\/\//i.test(url)
+        )
+      : [];
 
-    const purchasePriceRaw = String(
-      formData.get("purchase_price") || "0"
-    );
+    const purchasePriceRaw =
+      typeof body?.purchase_price === "string"
+        ? body.purchase_price
+        : String(body?.purchase_price ?? "0");
 
-    const purchasePrice = Number(
-      purchasePriceRaw
-    );
+    const purchasePrice = Number(purchasePriceRaw);
 
     // Seller configuration
     const dispatchTime =
-      String(
-        formData.get("dispatch_time") ||
-          "24hrs"
-      );
+      String(body?.dispatch_time || "24hrs");
 
     const packagingType =
       String(
-        formData.get("packaging_type") ||
+        body?.packaging_type ||
           "Sturdy cardboard box"
       );
 
     const packagingCondition =
       String(
-        formData.get(
-          "packaging_condition"
-        ) || "Good"
+        body?.packaging_condition ||
+          "Good"
       );
 
     const itemStatus =
       String(
-        formData.get("item_status") ||
+        body?.item_status ||
           "Used - condition as shown"
       );
 
     const additionalNotes =
-      String(
-        formData.get(
-          "additional_notes"
-        ) || ""
-      );
-
+      String(body?.additional_notes || "");
 
     // --------------------------------
     // VALIDATION
     // --------------------------------
 
-    if (files.length === 0) {
+    if (imageUrls.length === 0) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "No photos were provided.",
+          error: "No valid listing images were supplied.",
         },
         { status: 400 }
       );
     }
 
-    if (files.length > 5) {
+    if (imageUrls.length > 5) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "Maximum of 5 photos is allowed.",
+          error: "Maximum of 5 photos is allowed.",
         },
         { status: 400 }
       );
     }
 
-
-    // --------------------------------
-    // CONVERT / VALIDATE IMAGES
-    // --------------------------------
-
-    const imageInputs = [];
-
-    const allowedMimeTypes = new Set([
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-    ]);
-
-    for (const file of files) {
-      const arrayBuffer =
-        await file.arrayBuffer();
-
-      const bytes =
-        new Uint8Array(arrayBuffer);
-
-      if (bytes.length === 0) {
-        throw new Error(
-          `The image "${file.name || "uploaded file"}" is empty.`
-        );
-      }
-
-      // Detect the actual file format from its binary signature.
-      const isJpeg =
-        bytes.length >= 3 &&
-        bytes[0] === 0xff &&
-        bytes[1] === 0xd8 &&
-        bytes[2] === 0xff;
-
-      const isPng =
-        bytes.length >= 8 &&
-        bytes[0] === 0x89 &&
-        bytes[1] === 0x50 &&
-        bytes[2] === 0x4e &&
-        bytes[3] === 0x47 &&
-        bytes[4] === 0x0d &&
-        bytes[5] === 0x0a &&
-        bytes[6] === 0x1a &&
-        bytes[7] === 0x0a;
-
-      const isWebp =
-        bytes.length >= 12 &&
-        bytes[0] === 0x52 &&
-        bytes[1] === 0x49 &&
-        bytes[2] === 0x46 &&
-        bytes[3] === 0x46 &&
-        bytes[8] === 0x57 &&
-        bytes[9] === 0x45 &&
-        bytes[10] === 0x42 &&
-        bytes[11] === 0x50;
-
-      let mimeType = "";
-
-      if (isJpeg) {
-        mimeType = "image/jpeg";
-      } else if (isPng) {
-        mimeType = "image/png";
-      } else if (isWebp) {
-        mimeType = "image/webp";
-      } else {
-        throw new Error(
-          `Unsupported image format: ${file.name || "uploaded file"}. Please use a JPG, PNG or WebP photo.`
-        );
-      }
-
-      if (!allowedMimeTypes.has(mimeType)) {
-        throw new Error(
-          `Unsupported image format: ${file.name || "uploaded file"}. Please use a JPG, PNG or WebP photo.`
-        );
-      }
-
-      const base64 =
-        Buffer.from(bytes).toString("base64");
-
-      const imageUrl =
-        `data:${mimeType};base64,${base64}`;
-
-      imageInputs.push({
-        type:
-          "input_image" as const,
-
-        image_url:
-          imageUrl,
-
-        detail:
-          "high" as const,
-      });
-    }
-
+    // Only tiny URLs are sent through Vercel. OpenAI reads the
+    // original images directly from Supabase Storage.
+    const imageInputs = imageUrls.map(
+      (imageUrl) => ({
+        type: "input_image" as const,
+        image_url: imageUrl,
+        detail: "high" as const,
+      })
+    );
 
     // --------------------------------
     // AI PROMPT
@@ -1035,7 +940,7 @@ Use EXACTLY this structure:
 {
   "success": true,
   "version": "0.2.0",
-  "photosAnalysed": ${files.length},
+  "photosAnalysed": ${imageUrls.length},
 
   "product": {
     "brand": "",
@@ -1237,7 +1142,7 @@ Use EXACTLY this structure:
       "0.2.0";
 
     data.photosAnalysed =
-      files.length;
+      imageUrls.length;
 
 
     // --------------------------------

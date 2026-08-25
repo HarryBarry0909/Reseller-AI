@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 
 
 type SizeData = {
@@ -331,54 +332,50 @@ export default function AddItem() {
 
     try {
 
-      const formData =
-        new FormData();
+      const supabase = createClient();
 
-      // Convert any phone-specific image format to a normal JPEG
-      // before it reaches the server/OpenAI.
+      // Upload the original photos directly to Supabase Storage.
+      // This keeps large iPhone camera files out of the Vercel request body.
+      const imageUrls: string[] = [];
+
       for (const photo of photos) {
-        const preparedPhoto =
-          await prepareImageForUpload(photo);
+        const extension =
+          photo.name.split(".").pop()?.toLowerCase() ||
+          (photo.type === "image/png" ? "png" : "jpg");
 
-        formData.append(
-          "files",
-          preparedPhoto,
-          preparedPhoto.name
-        );
+        const safeExtension =
+          ["jpg", "jpeg", "png", "webp", "heic", "heif"].includes(extension)
+            ? extension
+            : "jpg";
+
+        const filePath =
+          `analysis/${crypto.randomUUID()}.${safeExtension}`;
+
+        const { error: uploadError } =
+          await supabase.storage
+            .from("listing-images")
+            .upload(filePath, photo, {
+              cacheControl: "3600",
+              upsert: false,
+              contentType: photo.type || "image/jpeg",
+            });
+
+        if (uploadError) {
+          throw new Error(
+            `Photo upload failed: ${uploadError.message}`
+          );
+        }
+
+        const {
+          data: { publicUrl },
+        } = supabase.storage
+          .from("listing-images")
+          .getPublicUrl(filePath);
+
+        imageUrls.push(publicUrl);
       }
 
-      formData.append(
-        "purchase_price",
-        purchasePrice || "0"
-      );
-
-      formData.append(
-        "dispatch_time",
-        dispatchTime
-      );
-
-      formData.append(
-        "packaging_type",
-        packagingType
-      );
-
-      formData.append(
-        "packaging_condition",
-        packagingCondition
-      );
-
-      formData.append(
-        "item_status",
-        itemStatus
-      );
-
-      formData.append(
-        "additional_notes",
-        additionalNotes
-      );
-
-      // Build an absolute URL from the live Vercel origin.
-      // This avoids browser-specific issues with relative API URLs.
+      // Only small JSON metadata and image URLs go through Vercel.
       const apiUrl =
         new URL(
           "/api/analyse",
@@ -390,7 +387,18 @@ export default function AddItem() {
           apiUrl,
           {
             method: "POST",
-            body: formData,
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              image_urls: imageUrls,
+              purchase_price: purchasePrice || "0",
+              dispatch_time: dispatchTime,
+              packaging_type: packagingType,
+              packaging_condition: packagingCondition,
+              item_status: itemStatus,
+              additional_notes: additionalNotes,
+            }),
             cache: "no-store",
           }
         );
