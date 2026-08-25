@@ -5,11 +5,10 @@ import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Lexend } from "next/font/google";
 import {
-  deleteListing,
-  getImageSet,
-  getListings,
-  type ListingRecord,
-} from "../../lib/listing-store";
+  deleteInventoryItem,
+  getInventory,
+  type InventoryItem,
+} from "../../lib/inventory-store";
 
 const lexend = Lexend({
   subsets: ["latin"],
@@ -34,64 +33,47 @@ function money(value: number | null | undefined) {
     : `£${value.toFixed(2)}`;
 }
 
-function getTitle(item: ListingRecord) {
-  return item.listing?.title || item.product?.item_type || "Untitled item";
+function getTitle(item: InventoryItem) {
+  return (
+    item.listing?.title ||
+    (item.product?.item_type as string) ||
+    "Untitled item"
+  );
 }
 
-function getBrand(item: ListingRecord) {
-  return item.product?.brand || "Unknown brand";
+function getBrand(item: InventoryItem) {
+  return (
+    (item.product?.brand as string) ||
+    "Unknown brand"
+  );
 }
 
-function getPrice(item: ListingRecord) {
+function getPrice(item: InventoryItem) {
   const selling = item.selling as
-    | { price?: number | null; customPrice?: number | null }
+    | {
+        price?: number | null;
+        customPrice?: number | null;
+      }
     | undefined;
 
-  return selling?.price ?? selling?.customPrice ?? null;
+  return (
+    selling?.price ??
+    selling?.customPrice ??
+    null
+  );
 }
 
-function ListingThumb({ item }: { item: ListingRecord }) {
-  const [src, setSrc] = useState("");
+function getROI(item: InventoryItem) {
+  return typeof item.estimatedROI === "number" &&
+    Number.isFinite(item.estimatedROI)
+    ? item.estimatedROI
+    : null;
+}
 
-  useEffect(() => {
-    let alive = true;
-    let objectUrl = "";
-
-    async function loadImage() {
-      try {
-        if (!item.imageSetId || !item.imageCount) return;
-
-        const blobs = await getImageSet(
-          item.imageSetId,
-          item.imageCount
-        );
-
-        if (!alive || !blobs[0]) return;
-
-        objectUrl = URL.createObjectURL(blobs[0]);
-        setSrc(objectUrl);
-      } catch (error) {
-        console.error("Failed to load inventory image:", error);
-      }
-    }
-
-    void loadImage();
-
-    return () => {
-      alive = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [item.imageSetId, item.imageCount]);
-
-  return src ? (
-    <img
-      src={src}
-      alt=""
-      className="h-full w-full object-cover"
-    />
-  ) : (
+function ListingThumb({ item }: { item: InventoryItem }) {
+  return (
     <div className="flex h-full w-full items-center justify-center bg-[#f4f4f5] text-3xl text-zinc-300">
-      ▧
+      {item.imageCount > 0 ? "📷" : "▧"}
     </div>
   );
 }
@@ -99,7 +81,7 @@ function ListingThumb({ item }: { item: ListingRecord }) {
 function StatusPill({
   status,
 }: {
-  status: ListingRecord["status"];
+  status: InventoryItem["status"];
 }) {
   const classes =
     status === "Sold"
@@ -167,13 +149,13 @@ export default function InventoryPage() {
   // usePathname() is the Next.js-safe way to determine the active route.
   const pathname = usePathname();
 
-  const [items, setItems] = useState<ListingRecord[]>([]);
+  const [items, setItems] = useState<InventoryItem[]>([]);
   const [filter, setFilter] = useState<Filter>("All");
   const [search, setSearch] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   function refresh() {
-    setItems(getListings());
+    setItems(getInventory());
   }
 
   useEffect(() => {
@@ -211,7 +193,6 @@ export default function InventoryPage() {
         item.product?.model,
         item.category,
         item.condition,
-        item.marketplace,
       ]
         .filter(Boolean)
         .join(" ")
@@ -243,7 +224,7 @@ export default function InventoryPage() {
     if (!item) return;
 
     const confirmed = window.confirm(
-      `Remove "${getTitle(item)}" completely?\n\nThis removes the saved item and its stored images from this browser.`
+      `Remove "${getTitle(item)}" completely?\n\nThis removes the saved Inventory item from this browser.`
     );
 
     if (!confirmed) return;
@@ -251,7 +232,7 @@ export default function InventoryPage() {
     setDeletingId(id);
 
     try {
-      deleteListing(id);
+      deleteInventoryItem(id);
       refresh();
     } catch (error) {
       console.error("Failed to remove inventory item:", error);
@@ -447,18 +428,32 @@ export default function InventoryPage() {
                         </div>
 
                         <div className="mt-4 flex items-center justify-between">
-                          <div>
-                            <p className="text-xs text-zinc-400">
-                              Estimated profit
-                            </p>
+                          <div className="flex items-start gap-6">
+                            <div>
+                              <p className="text-xs text-zinc-400">
+                                Estimated profit
+                              </p>
 
-                            <p className="mt-0.5 font-semibold text-emerald-600">
-                              {money(item.estimatedProfit)}
-                            </p>
+                              <p className="mt-0.5 font-semibold text-emerald-600">
+                                {money(item.estimatedProfit)}
+                              </p>
+                            </div>
+
+                            <div>
+                              <p className="text-xs text-zinc-400">
+                                ROI
+                              </p>
+
+                              <p className="mt-0.5 font-semibold">
+                                {getROI(item) !== null
+                                  ? `${getROI(item)!.toFixed(1)}%`
+                                  : "—"}
+                              </p>
+                            </div>
                           </div>
 
                           <Link
-                            href={`/listings/${item.id}`}
+                            href={`/inventory/${item.id}`}
                             className="rounded-full border border-zinc-200 px-4 py-2 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-50"
                           >
                             View

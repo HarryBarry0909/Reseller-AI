@@ -3,6 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import {
+  addInventoryItem,
+  createInventoryId,
+  type InventoryItem,
+} from "@/lib/inventory-store";
 
 
 type SizeData = {
@@ -202,109 +207,6 @@ export default function AddItem() {
   // IMAGE PREPARATION
   // ---------------------------------------
 
-  async function prepareImageForUpload(
-    file: File
-  ): Promise<File> {
-    const type =
-      file.type?.toLowerCase().split(";")[0] || "";
-
-    const supported =
-      type === "image/jpeg" ||
-      type === "image/png" ||
-      type === "image/webp";
-
-    // Normal browser-supported formats can be uploaded directly.
-    if (supported) {
-      return file;
-    }
-
-    // Some phones (especially iPhones) can provide HEIC/HEIF or
-    // another browser-specific image type. Try to decode it in the
-    // browser and convert it to JPEG before sending it to the API.
-    const objectUrl = URL.createObjectURL(file);
-
-    try {
-      const image = await new Promise<HTMLImageElement>(
-        (resolve, reject) => {
-          const img = new Image();
-
-          img.onload = () => resolve(img);
-          img.onerror = () =>
-            reject(
-              new Error(
-                "This phone image format could not be converted. Please use a JPG, PNG or WebP photo."
-              )
-            );
-
-          img.src = objectUrl;
-        }
-      );
-
-      const maxDimension = 2400;
-
-      const scale = Math.min(
-        1,
-        maxDimension /
-          Math.max(image.naturalWidth, image.naturalHeight)
-      );
-
-      const width = Math.max(
-        1,
-        Math.round(image.naturalWidth * scale)
-      );
-
-      const height = Math.max(
-        1,
-        Math.round(image.naturalHeight * scale)
-      );
-
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-
-      const context = canvas.getContext("2d");
-
-      if (!context) {
-        throw new Error(
-          "Your browser could not prepare this photo. Please use a JPG, PNG or WebP image."
-        );
-      }
-
-      context.drawImage(image, 0, 0, width, height);
-
-      const blob = await new Promise<Blob | null>(
-        resolve =>
-          canvas.toBlob(
-            resolve,
-            "image/jpeg",
-            0.88
-          )
-      );
-
-      if (!blob) {
-        throw new Error(
-          "Your browser could not prepare this photo. Please try a JPG or PNG image."
-        );
-      }
-
-      const baseName =
-        file.name
-          .replace(/\.[^/.]+$/, "")
-          .replace(/[^a-zA-Z0-9_-]/g, "_") ||
-        "photo";
-
-      return new File(
-        [blob],
-        `${baseName}.jpg`,
-        {
-          type: "image/jpeg",
-          lastModified: Date.now(),
-        }
-      );
-    } finally {
-      URL.revokeObjectURL(objectUrl);
-    }
-  }
 
 
   // ---------------------------------------
@@ -577,51 +479,146 @@ export default function AddItem() {
   // GO TO ITEM SPECIFICS
   // ---------------------------------------
 
-  function goToItemSpecifics() {
-
+  async function goToItemSpecifics() {
     if (!result) {
-
       return;
-
     }
 
+    try {
+      const supabase = createClient();
 
-    const config = {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
 
-      dispatchTime,
+      if (!user) {
+        setError("You must be logged in to save an inventory item.");
+        return;
+      }
 
-      packagingType,
+      const existingId =
+        sessionStorage.getItem("reseller_ai_inventory_id");
 
-      packagingCondition,
+      // Don't create the same inventory item twice if the button is
+      // accidentally pressed more than once.
+      const inventoryId =
+        existingId || createInventoryId();
 
-      itemStatus,
+      const purchase =
+        Number(purchasePrice || 0);
 
-      additionalNotes,
+      const recommended =
+        Number(result.pricing.recommended || 0);
 
-      purchasePrice,
+      const estimatedProfit =
+        recommended - purchase;
 
-    };
+      const estimatedROI =
+        purchase > 0
+          ? (estimatedProfit / purchase) * 100
+          : null;
 
+      const now =
+        new Date().toISOString();
 
-    // Store the AI result temporarily.
-    sessionStorage.setItem(
-      "reseller_ai_result",
-      JSON.stringify(result)
-    );
+      const inventoryItem: InventoryItem = {
+        id: inventoryId,
+        userId: user.id,
 
+        createdAt: now,
+        updatedAt: now,
 
-    // Store the seller's configuration.
-    sessionStorage.setItem(
-      "reseller_ai_config",
-      JSON.stringify(config)
-    );
+        status: "Draft",
 
+        imageSetId: null,
+        imageCount: result.photosAnalysed,
 
-    // Move to the Item Specifics page.
-    router.push("/specifics");
+        product: {
+          ...result.product,
+        },
 
+        listing: {
+          title: result.listing.title,
+          description: result.listing.description,
+        },
+
+        category:
+          result.product.category || null,
+
+        condition:
+          result.product.condition?.overall || null,
+
+        itemSpecifics: {},
+
+        selling: {
+          marketplace: "eBay",
+          price: recommended,
+          recommendedPrice: recommended,
+        },
+
+        shipping: {},
+
+        dispatch: dispatchTime,
+
+        packaging: {
+          type: packagingType,
+          condition: packagingCondition,
+        },
+
+        sellerStatus: itemStatus,
+        additionalNotes:
+          additionalNotes || null,
+
+        purchasePrice: purchase,
+
+        estimatedProfit,
+
+        estimatedROI,
+
+        quantity: 1,
+        quantitySold: 0,
+
+        soldPrice: null,
+        soldAt: null,
+      };
+
+      if (!existingId) {
+        addInventoryItem(inventoryItem);
+
+        sessionStorage.setItem(
+          "reseller_ai_inventory_id",
+          inventoryId
+        );
+      }
+
+      sessionStorage.setItem(
+        "reseller_ai_result",
+        JSON.stringify(result)
+      );
+
+      sessionStorage.setItem(
+        "reseller_ai_config",
+        JSON.stringify({
+          dispatchTime,
+          packagingType,
+          packagingCondition,
+          itemStatus,
+          additionalNotes,
+          purchasePrice,
+        })
+      );
+
+      router.push("/specifics");
+    } catch (err) {
+      console.error(err);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not create the inventory item."
+      );
+    }
   }
-
 
   // ---------------------------------------
   // RESET
@@ -638,6 +635,10 @@ export default function AddItem() {
     setPurchasePrice("");
 
     setError("");
+
+    sessionStorage.removeItem(
+      "reseller_ai_inventory_id"
+    );
 
     setDispatchTime("24hrs");
 

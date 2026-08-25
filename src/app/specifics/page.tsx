@@ -2,14 +2,12 @@
 
 import { useEffect, useState } from "react";
 import type { ChangeEvent } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { Lexend } from "next/font/google";
 import {
-  addListing,
-  createId,
-  type ListingRecord,
-} from "../../lib/listing-store";
-import { saveListingToSupabase } from "../../lib/supabase/listings";
+  getInventoryItem,
+  updateInventoryItem,
+} from "../../lib/inventory-store";
 
 /* =========================================================
    TYPES
@@ -135,7 +133,6 @@ const DEFAULT_CONFIG: SavedConfig = {
 
 export default function ItemSpecifics() {
   const router = useRouter();
-  const pathname = usePathname();
 
 
   /* =======================================================
@@ -331,12 +328,14 @@ export default function ItemSpecifics() {
   useEffect(() => {
     try {
       const storedResult =
-        sessionStorage.getItem("reseller_ai_result") ||
-        localStorage.getItem("reseller_ai_result");
+        sessionStorage.getItem(
+          "reseller_ai_result"
+        );
 
       const storedConfig =
-        sessionStorage.getItem("reseller_ai_config") ||
-        localStorage.getItem("reseller_ai_config");
+        sessionStorage.getItem(
+          "reseller_ai_config"
+        );
 
 
       if (!storedResult) {
@@ -345,11 +344,11 @@ export default function ItemSpecifics() {
       }
 
 
-      const parsedResult = JSON.parse(storedResult) as AIResult;
+      const parsedResult =
+        JSON.parse(
+          storedResult
+        ) as AIResult;
 
-      if (!parsedResult?.success || !parsedResult?.product || !parsedResult?.listing) {
-        throw new Error("The AI analysis data is incomplete. Please analyse the item again.");
-      }
 
       setResult(parsedResult);
 
@@ -712,121 +711,27 @@ export default function ItemSpecifics() {
       return;
     }
 
+    const inventoryId =
+      sessionStorage.getItem("reseller_ai_inventory_id");
+
+    if (!inventoryId) {
+      setPageError(
+        "This item does not have an Inventory record yet. Please go back to Add Item and start again."
+      );
+      return;
+    }
+
+    const existingItem =
+      getInventoryItem(inventoryId);
+
+    if (!existingItem) {
+      setPageError(
+        "The Inventory item could not be found. Please go back to Add Item and start again."
+      );
+      return;
+    }
+
     const finalPrice = getCurrentPrice();
-
-    const marketplace: ListingRecord["marketplace"] = "eBay";
-    const now = new Date().toISOString();
-
-    const listingData = {
-      createdAt: now,
-      marketplace,
-
-      product: {
-        ...result.product,
-        brand,
-        model,
-        item_type: itemType,
-        primary_colour: primaryColour,
-        secondary_colour: secondaryColour,
-        gender,
-        size: {
-          ...result.product.size,
-          detected_value: size,
-        },
-      },
-
-      listing: {
-        title,
-        description,
-      },
-
-      category,
-      condition,
-
-      itemSpecifics: {
-        brand,
-        model,
-        itemType,
-        primaryColour,
-        secondaryColour,
-        gender,
-        size,
-        processorSpeed,
-        socketType,
-        cores,
-        threads,
-        generation,
-      },
-
-      selling: {
-        format: sellingFormat,
-        price:
-          sellingFormat === "BUY_IT_NOW"
-            ? finalPrice
-            : null,
-        customPrice: customPrice ? Number(customPrice) : null,
-        allowOffers,
-        autoAccept: autoAccept ? Number(autoAccept) : null,
-        autoDecline: autoDecline ? Number(autoDecline) : null,
-        quantity: Number(quantity) || 1,
-        auction:
-          sellingFormat !== "BUY_IT_NOW"
-            ? {
-                startPrice: Number(auctionStartPrice || 0),
-                duration: Number(auctionDuration),
-                buyItNow: auctionBuyItNow
-                  ? Number(auctionBuyItNow)
-                  : null,
-              }
-            : null,
-      },
-
-      shipping: {
-        paidBy: shippingPaidBy,
-        price:
-          shippingPaidBy === "BUYER"
-            ? Number(shippingPrice || 0)
-            : 0,
-        service: shippingService,
-        parcelSize,
-        weight: Number(parcelWeight || 0),
-        dimensions: {
-          length: Number(parcelLength || 0),
-          width: Number(parcelWidth || 0),
-          height: Number(parcelHeight || 0),
-        },
-      },
-
-      dispatch: config.dispatchTime,
-
-      packaging: {
-        type: config.packagingType,
-        condition: config.packagingCondition,
-      },
-
-      returns: {
-        accepted: returnsAccepted,
-        period: returnsAccepted ? Number(returnPeriod) : null,
-        postage: returnsAccepted ? returnPostage : null,
-      },
-
-      sellerStatus: config.itemStatus,
-      additionalNotes: config.additionalNotes,
-      purchasePrice: Number(config.purchasePrice || 0),
-      estimatedProfit: getEstimatedProfit(),
-      estimatedROI: getEstimatedROI(),
-    };
-
-    /*
-      IMPORTANT:
-      Previously this function only saved the listing into sessionStorage.
-      That meant the Inventory/Listings pages had nothing to read.
-
-      We now create a real ListingRecord and add it to listing-store.ts.
-      The store writes it to localStorage and fires the
-      "reseller-ai-listings-changed" event, so the Dashboard, Listings and
-      Inventory pages update automatically.
-    */
 
     const imageSetId =
       sessionStorage.getItem("reseller_ai_image_set_id");
@@ -835,77 +740,233 @@ export default function ItemSpecifics() {
       sessionStorage.getItem("reseller_ai_image_count") || 0
     );
 
-    const savedListing: ListingRecord = {
-      ...listingData,
+    const purchasePrice =
+      Number(config.purchasePrice || 0);
 
-      id: createId(),
-      updatedAt: now,
+    const estimatedProfit =
+      getEstimatedProfit();
 
-      // New items start as Draft. The user can change this from the
-      // listing details page when it is actually live.
-      status: "Draft",
+    const estimatedROI =
+      getEstimatedROI();
 
-      soldPrice: null,
-      soldAt: null,
-
-      quantity: Number(quantity) || 1,
-      quantitySold: 0,
-
-      imageSetId: imageSetId || null,
-      imageCount,
+    const updatedProduct = {
+      ...result.product,
+      brand,
+      model,
+      item_type: itemType,
+      primary_colour: primaryColour,
+      secondary_colour: secondaryColour,
+      gender,
+      size: {
+        ...result.product.size,
+        detected_value: size,
+      },
     };
 
-    // Keep the existing local system working while also syncing the listing
-    // to the currently logged-in user's Supabase account.
-    addListing(savedListing);
-
-    // Keep the session copy as well for backwards compatibility.
-    sessionStorage.setItem(
-      "reseller_ai_listing",
-      JSON.stringify(savedListing)
-    );
-
-    try {
-      await saveListingToSupabase({
-        title,
-        description,
-        price:
-          sellingFormat === "BUY_IT_NOW"
-            ? finalPrice
-            : sellingFormat === "AUCTION_BUY_IT_NOW"
-              ? Number(auctionBuyItNow || auctionStartPrice || 0)
-              : Number(auctionStartPrice || 0),
-        purchase_price: Number(config.purchasePrice || 0),
-        estimated_profit: getEstimatedProfit(),
+    const updatedItem = updateInventoryItem(
+      inventoryId,
+      {
         status: "Draft",
-        marketplace: "eBay",
+
+        imageSetId:
+          imageSetId ||
+          existingItem.imageSetId ||
+          null,
+
+        imageCount:
+          imageCount ||
+          existingItem.imageCount ||
+          result.photosAnalysed,
+
+        product: updatedProduct,
+
+        listing: {
+          title,
+          description,
+        },
+
         category,
         condition,
-        quantity: Number(quantity) || 1,
-        quantity_sold: 0,
-        image_set_id: imageSetId || null,
-        image_count: imageCount,
-        product: savedListing.product,
-        item_specifics: savedListing.itemSpecifics,
-        selling: savedListing.selling,
-        shipping: savedListing.shipping,
-        sold_price: null,
-        sold_at: null,
-      });
 
-      setSaved(true);
-      console.log("SAVED EBAY LISTING LOCALLY + SUPABASE:", savedListing);
-    } catch (error) {
-      console.error("SUPABASE LISTING SAVE FAILED:", error);
-      setSaved(false);
+        itemSpecifics: {
+          brand,
+          model,
+          itemType,
+          primaryColour,
+          secondaryColour,
+          gender,
+          size,
+          processorSpeed,
+          socketType,
+          cores,
+          threads,
+          generation,
+        },
+
+        selling: {
+          format: sellingFormat,
+
+          price:
+            sellingFormat === "BUY_IT_NOW"
+              ? finalPrice
+              : null,
+
+          customPrice:
+            customPrice
+              ? Number(customPrice)
+              : null,
+
+          allowOffers,
+
+          autoAccept:
+            autoAccept
+              ? Number(autoAccept)
+              : null,
+
+          autoDecline:
+            autoDecline
+              ? Number(autoDecline)
+              : null,
+
+          quantity:
+            Number(quantity) || 1,
+
+          auction:
+            sellingFormat !== "BUY_IT_NOW"
+              ? {
+                  startPrice:
+                    Number(
+                      auctionStartPrice || 0
+                    ),
+
+                  duration:
+                    Number(auctionDuration),
+
+                  buyItNow:
+                    auctionBuyItNow
+                      ? Number(
+                          auctionBuyItNow
+                        )
+                      : null,
+                }
+              : null,
+        },
+
+        shipping: {
+          paidBy: shippingPaidBy,
+
+          price:
+            shippingPaidBy === "BUYER"
+              ? Number(
+                  shippingPrice || 0
+                )
+              : 0,
+
+          service: shippingService,
+
+          parcelSize,
+
+          weight:
+            Number(
+              parcelWeight || 0
+            ),
+
+          dimensions: {
+            length:
+              Number(
+                parcelLength || 0
+              ),
+
+            width:
+              Number(
+                parcelWidth || 0
+              ),
+
+            height:
+              Number(
+                parcelHeight || 0
+              ),
+          },
+        },
+
+        dispatch:
+          config.dispatchTime,
+
+        packaging: {
+          type:
+            config.packagingType,
+
+          condition:
+            config.packagingCondition,
+        },
+
+        returns: {
+          accepted:
+            returnsAccepted,
+
+          period:
+            returnsAccepted
+              ? Number(returnPeriod)
+              : null,
+
+          postage:
+            returnsAccepted
+              ? returnPostage
+              : null,
+        },
+
+        sellerStatus:
+          config.itemStatus,
+
+        additionalNotes:
+          config.additionalNotes,
+
+        purchasePrice,
+
+        estimatedProfit,
+
+        estimatedROI,
+
+        quantity:
+          Number(quantity) || 1,
+
+        quantitySold:
+          existingItem.quantitySold || 0,
+
+        soldPrice:
+          existingItem.soldPrice || null,
+
+        soldAt:
+          existingItem.soldAt || null,
+      }
+    );
+
+    if (!updatedItem) {
       setPageError(
-        error instanceof Error
-          ? `The listing was saved locally, but could not be synced to your account: ${error.message}`
-          : "The listing was saved locally, but could not be synced to your account."
+        "The Inventory item could not be updated."
       );
+      return;
     }
-  }
 
+    // Keep the session copy for the current workflow.
+    sessionStorage.setItem(
+      "reseller_ai_inventory",
+      JSON.stringify(updatedItem)
+    );
+
+    // Remove the old listing session record so this workflow no longer
+    // creates a separate listing object.
+    sessionStorage.removeItem(
+      "reseller_ai_listing"
+    );
+
+    setSaved(true);
+
+    console.log(
+      "INVENTORY ITEM UPDATED:",
+      updatedItem
+    );
+  }
 
   /* =======================================================
      INPUT HANDLER
@@ -3100,8 +3161,8 @@ export default function ItemSpecifics() {
             className="rounded-full bg-[#5540c8] px-8 py-3 font-semibold text-white shadow-sm transition hover:bg-[#4936b5]"
           >
             {saved
-              ? "✓ Listing Saved"
-              : "Save Listing →"}
+              ? "✓ Saved to Inventory"
+              : "Save to Inventory →"}
           </button>
 
         </div>
@@ -3121,9 +3182,9 @@ export default function ItemSpecifics() {
 
 
             <p className="mt-1 text-sm">
-              Your eBay listing configuration has been
-              saved locally. We can connect this to the
-              Inventory system and eBay publishing next.
+              Your item has been saved to Inventory.
+              It remains a Draft until you choose to list
+              it.
             </p>
 
           </div>
