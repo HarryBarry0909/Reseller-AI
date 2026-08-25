@@ -88,86 +88,33 @@ export async function POST(request: Request) {
 
 
     // --------------------------------
-    // CONVERT / VALIDATE IMAGES
+    // CONVERT IMAGES
     // --------------------------------
 
     const imageInputs = [];
 
-    // Mobile browsers can report unusual or missing MIME types.
-    // Only pass image formats that the OpenAI vision input accepts.
-    const allowedMimeTypes = new Set([
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-    ]);
-
     for (const file of files) {
-      // Prefer the browser MIME type when it is valid.
-      // If mobile gives us an empty/unknown type, detect common
-      // image formats from the file's binary signature instead.
-      let mimeType = file.type?.toLowerCase().split(";")[0] || "";
+      const arrayBuffer =
+        await file.arrayBuffer();
 
-      const arrayBuffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
+      const base64 =
+        Buffer.from(
+          arrayBuffer
+        ).toString("base64");
 
-      const isJpeg =
-        bytes.length >= 3 &&
-        bytes[0] === 0xff &&
-        bytes[1] === 0xd8 &&
-        bytes[2] === 0xff;
-
-      const isPng =
-        bytes.length >= 8 &&
-        bytes[0] === 0x89 &&
-        bytes[1] === 0x50 &&
-        bytes[2] === 0x4e &&
-        bytes[3] === 0x47 &&
-        bytes[4] === 0x0d &&
-        bytes[5] === 0x0a &&
-        bytes[6] === 0x1a &&
-        bytes[7] === 0x0a;
-
-      const isWebp =
-        bytes.length >= 12 &&
-        bytes[0] === 0x52 &&
-        bytes[1] === 0x49 &&
-        bytes[2] === 0x46 &&
-        bytes[3] === 0x46 &&
-        bytes[8] === 0x57 &&
-        bytes[9] === 0x45 &&
-        bytes[10] === 0x42 &&
-        bytes[11] === 0x50;
-
-      if (isJpeg) {
-        mimeType = "image/jpeg";
-      } else if (isPng) {
-        mimeType = "image/png";
-      } else if (isWebp) {
-        mimeType = "image/webp";
-      }
-
-      if (!allowedMimeTypes.has(mimeType)) {
-        throw new Error(
-          `Unsupported image format: ${file.name || "uploaded file"}. Please upload a JPG, PNG or WebP image.`
-        );
-      }
-
-      if (bytes.length === 0) {
-        throw new Error(
-          `The image "${file.name || "uploaded file"}" is empty. Please choose another image.`
-        );
-      }
-
-      const base64 = Buffer.from(bytes).toString("base64");
-
-      // Keep the data URL strictly formatted. This avoids malformed
-      // image URLs caused by mobile browser file metadata.
-      const dataUrl = `data:${mimeType};base64,${base64}`;
+      const mimeType =
+        file.type ||
+        "image/jpeg";
 
       imageInputs.push({
-        type: "input_image" as const,
-        image_url: dataUrl,
-        detail: "high" as const,
+        type:
+          "input_image" as const,
+
+        image_url:
+          `data:${mimeType};base64,${base64}`,
+
+        detail:
+          "high" as const,
       });
     }
 
@@ -1442,22 +1389,35 @@ Use EXACTLY this structure:
     });
 
   } catch (error) {
-
+    // Keep the full error in Vercel logs so mobile/production
+    // failures can be diagnosed instead of returning a vague error.
+    console.error("================================");
+    console.error("RESELLER AI API ERROR");
+    console.error("Error:", error);
     console.error(
-      "Reseller AI API error:",
-      error
+      "Message:",
+      error instanceof Error
+        ? error.message
+        : String(error)
     );
+    console.error(
+      "Stack:",
+      error instanceof Error
+        ? error.stack
+        : "No stack available"
+    );
+    console.error("================================");
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown API error.";
 
     return NextResponse.json(
       {
         success: false,
-
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown API error.",
+        error: message,
       },
-
       { status: 500 }
     );
   }
