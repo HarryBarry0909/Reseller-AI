@@ -1,21 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Lexend } from "next/font/google";
-
 import {
   deleteInventoryItem,
   getInventory,
   type InventoryItem,
-  type InventoryStatus,
 } from "../../lib/inventory-store";
-
-import { getImageSet } from "../../lib/listing-store";
 
 const lexend = Lexend({
   subsets: ["latin"],
+  variable: "--font-lexend",
 });
+
+/* =========================================================
+   FILTERS
+========================================================= */
 
 const filters = [
   "All",
@@ -33,200 +35,172 @@ type Filter = (typeof filters)[number];
    HELPERS
 ========================================================= */
 
-function money(value: number | null | undefined) {
+function money(
+  value: number | null | undefined
+): string {
   if (
     value == null ||
-    !Number.isFinite(Number(value))
+    !Number.isFinite(value)
   ) {
     return "—";
   }
 
-  return `£${Number(value).toFixed(2)}`;
+  return `£${value.toFixed(2)}`;
 }
 
-function getTitle(item: InventoryItem) {
+function getProductValue(
+  item: InventoryItem,
+  key: string
+): string {
+  const value =
+    item.product?.[key];
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return "";
+  }
+
+  return String(value);
+}
+
+function getTitle(
+  item: InventoryItem
+): string {
+  const listingTitle =
+    item.listing?.title;
+
+  if (
+    listingTitle &&
+    typeof listingTitle === "string"
+  ) {
+    return listingTitle;
+  }
+
+  const itemType =
+    getProductValue(
+      item,
+      "item_type"
+    );
+
   return (
-    item.listing?.title ||
-    String(item.product?.item_type || "") ||
+    itemType ||
     "Untitled item"
   );
 }
 
-function getBrand(item: InventoryItem) {
+function getBrand(
+  item: InventoryItem
+): string {
   return (
-    String(item.product?.brand || "") ||
+    getProductValue(
+      item,
+      "brand"
+    ) ||
     "Unknown brand"
   );
 }
 
-function getSalePrice(item: InventoryItem) {
-  const selling = item.selling as
-    | {
-        price?: number | null;
-        customPrice?: number | null;
-      }
-    | undefined;
-
-  if (selling?.price != null) {
-    return Number(selling.price);
-  }
-
-  if (selling?.customPrice != null) {
-    return Number(selling.customPrice);
-  }
-
-  return null;
+function getModel(
+  item: InventoryItem
+): string {
+  return getProductValue(
+    item,
+    "model"
+  );
 }
 
-function getROI(item: InventoryItem) {
+function getSalePrice(
+  item: InventoryItem
+): number | null {
+  const selling =
+    item.selling as
+      | {
+          price?: number | null;
+          customPrice?: number | null;
+        }
+      | undefined;
+
+  return (
+    selling?.price ??
+    selling?.customPrice ??
+    null
+  );
+}
+
+function getROI(
+  item: InventoryItem
+): number | null {
   if (
-    item.estimatedROI != null &&
-    Number.isFinite(Number(item.estimatedROI))
+    item.estimatedROI !== null &&
+    item.estimatedROI !== undefined &&
+    Number.isFinite(
+      item.estimatedROI
+    )
   ) {
-    return Number(item.estimatedROI);
+    return item.estimatedROI;
   }
 
-  const purchasePrice =
-    Number(item.purchasePrice || 0);
+  const purchase =
+    Number(
+      item.purchasePrice || 0
+    );
 
-  const salePrice =
-    getSalePrice(item);
+  const sale =
+    Number(
+      getSalePrice(item) || 0
+    );
 
-  if (
-    purchasePrice <= 0 ||
-    salePrice == null
-  ) {
+  if (purchase <= 0) {
     return null;
   }
 
   return (
-    ((salePrice - purchasePrice) /
-      purchasePrice) *
+    ((sale - purchase) /
+      purchase) *
     100
   );
 }
 
 /* =========================================================
-   STATUS
+   STATUS PILL
 ========================================================= */
 
 function StatusPill({
   status,
 }: {
-  status: InventoryStatus;
+  status: InventoryItem["status"];
 }) {
-  const classes =
-    status === "Sold"
-      ? "bg-emerald-50 text-emerald-700"
-      : status === "Listed"
-        ? "bg-blue-50 text-blue-700"
-        : status === "Ready to List"
-          ? "bg-violet-50 text-violet-700"
-          : status === "Removed"
-            ? "bg-red-50 text-red-600"
-            : status === "Unsold"
-              ? "bg-amber-50 text-amber-700"
-              : "bg-zinc-100 text-zinc-600";
+  let classes =
+    "bg-zinc-100 text-zinc-600";
 
-  return (
-    <span
-      className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${classes}`}
-    >
-      {status}
-    </span>
-  );
-}
+  if (status === "Sold") {
+    classes =
+      "bg-emerald-50 text-emerald-700";
+  }
 
-/* =========================================================
-   INVENTORY IMAGE
-========================================================= */
+  if (status === "Listed") {
+    classes =
+      "bg-blue-50 text-blue-700";
+  }
 
-function InventoryImage({
-  item,
-}: {
-  item: InventoryItem;
-}) {
-  const [src, setSrc] = useState("");
-  const [failed, setFailed] = useState(false);
+  if (status === "Ready to List") {
+    classes =
+      "bg-violet-50 text-violet-700";
+  }
 
-  useEffect(() => {
-    let alive = true;
-    let objectUrl = "";
-
-    async function loadImage() {
-      try {
-        if (
-          !item.imageSetId ||
-          Number(item.imageCount || 0) <= 0
-        ) {
-          return;
-        }
-
-        const images =
-          await getImageSet(
-            item.imageSetId,
-            Number(item.imageCount)
-          );
-
-        if (
-          !alive ||
-          !images ||
-          !images[0]
-        ) {
-          return;
-        }
-
-        objectUrl =
-          URL.createObjectURL(
-            images[0]
-          );
-
-        setSrc(objectUrl);
-      } catch (error) {
-        console.error(
-          "Inventory image failed:",
-          error
-        );
-
-        if (alive) {
-          setFailed(true);
-        }
-      }
-    }
-
-    void loadImage();
-
-    return () => {
-      alive = false;
-
-      if (objectUrl) {
-        URL.revokeObjectURL(
-          objectUrl
-        );
-      }
-    };
-  }, [
-    item.imageSetId,
-    item.imageCount,
-  ]);
-
-  if (src && !failed) {
-    return (
-      <img
-        src={src}
-        alt={getTitle(item)}
-        className="h-full w-full object-cover"
-        onError={() =>
-          setFailed(true)
-        }
-      />
-    );
+  if (status === "Removed") {
+    classes =
+      "bg-red-50 text-red-600";
   }
 
   return (
-    <div className="flex h-full w-full items-center justify-center bg-zinc-100 text-3xl text-zinc-300">
-      ▧
-    </div>
+    <span
+      className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[10px] font-bold ${classes}`}
+    >
+      {status}
+    </span>
   );
 }
 
@@ -249,7 +223,7 @@ function StatCard({
     | "green"
     | "amber";
 }) {
-  const classes = {
+  const toneClasses = {
     violet:
       "bg-[#eeeafa] text-[#5945c7]",
     blue:
@@ -261,20 +235,20 @@ function StatCard({
   };
 
   return (
-    <div className="rounded-[22px] border border-zinc-200/80 bg-white p-5 shadow-[0_2px_8px_rgba(0,0,0,0.025)]">
+    <div className="rounded-[20px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)]">
       <div className="flex items-start justify-between">
         <div>
           <p className="text-xs font-medium text-zinc-400">
             {label}
           </p>
 
-          <p className="mt-2 text-[30px] font-semibold tracking-tight">
+          <p className="mt-1 text-2xl font-semibold tracking-tight">
             {value}
           </p>
         </div>
 
         <div
-          className={`flex h-11 w-11 items-center justify-center rounded-full text-lg font-bold ${classes[tone]}`}
+          className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold ${toneClasses[tone]}`}
         >
           {icon}
         </div>
@@ -284,12 +258,117 @@ function StatCard({
 }
 
 /* =========================================================
+   INVENTORY IMAGE
+========================================================= */
+
+function InventoryImage({
+  item,
+}: {
+  item: InventoryItem;
+}) {
+  const [imageUrl, setImageUrl] =
+    useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+
+    async function loadImage() {
+      try {
+        if (
+          !item.imageSetId ||
+          !item.imageCount
+        ) {
+          return;
+        }
+
+        const store =
+          await import(
+            "../../lib/listing-store"
+          );
+
+        if (
+          typeof store.getImageSet !==
+          "function"
+        ) {
+          return;
+        }
+
+        const blobs =
+          await store.getImageSet(
+            item.imageSetId,
+            item.imageCount
+          );
+
+        if (
+          cancelled ||
+          !blobs ||
+          !blobs[0]
+        ) {
+          return;
+        }
+
+        objectUrl =
+          URL.createObjectURL(
+            blobs[0]
+          );
+
+        setImageUrl(
+          objectUrl
+        );
+      } catch (error) {
+        console.error(
+          "Inventory image could not be loaded:",
+          error
+        );
+      }
+    }
+
+    void loadImage();
+
+    return () => {
+      cancelled = true;
+
+      if (objectUrl) {
+        URL.revokeObjectURL(
+          objectUrl
+        );
+      }
+    };
+  }, [
+    item.imageSetId,
+    item.imageCount,
+  ]);
+
+  return (
+    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-zinc-100 sm:h-16 sm:w-16">
+      {imageUrl ? (
+        <img
+          src={imageUrl}
+          alt=""
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-xl text-zinc-300">
+          ▧
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
    PAGE
 ========================================================= */
 
 export default function InventoryPage() {
+  const pathname =
+    usePathname();
+
   const [items, setItems] =
-    useState<InventoryItem[]>([]);
+    useState<InventoryItem[]>(
+      []
+    );
 
   const [filter, setFilter] =
     useState<Filter>("All");
@@ -298,57 +377,53 @@ export default function InventoryPage() {
     useState("");
 
   const [deletingId, setDeletingId] =
-    useState<string | null>(null);
+    useState<string | null>(
+      null
+    );
 
   /* =======================================================
-     REFRESH INVENTORY
+     REFRESH
   ======================================================= */
 
   function refresh() {
-    const inventory =
-      getInventory();
-
-    console.log(
-      "INVENTORY PAGE LOADED:",
-      inventory
+    setItems(
+      getInventory()
     );
-
-    setItems(inventory);
   }
 
   useEffect(() => {
     refresh();
 
-    const handleInventoryChange =
+    const handleChange =
       () => {
         refresh();
       };
 
     window.addEventListener(
       "reseller-ai-inventory-changed",
-      handleInventoryChange
+      handleChange
     );
 
     window.addEventListener(
       "storage",
-      handleInventoryChange
+      handleChange
     );
 
     return () => {
       window.removeEventListener(
         "reseller-ai-inventory-changed",
-        handleInventoryChange
+        handleChange
       );
 
       window.removeEventListener(
         "storage",
-        handleInventoryChange
+        handleChange
       );
     };
   }, []);
 
   /* =======================================================
-     FILTER
+     FILTER + SEARCH
   ======================================================= */
 
   const visibleItems =
@@ -364,27 +439,22 @@ export default function InventoryPage() {
             filter === "All" ||
             item.status === filter;
 
-          const searchableText = [
+          const searchText = [
             getTitle(item),
             getBrand(item),
-            item.product?.model,
+            getModel(item),
             item.category,
             item.condition,
-            item.sellerStatus,
           ]
             .filter(Boolean)
             .join(" ")
             .toLowerCase();
 
-          const matchesSearch =
-            !query ||
-            searchableText.includes(
-              query
-            );
-
           return (
             matchesFilter &&
-            matchesSearch
+            searchText.includes(
+              query
+            )
           );
         }
       );
@@ -405,26 +475,26 @@ export default function InventoryPage() {
     inStock:
       items.filter(
         (item) =>
-          item.status !== "Sold" &&
-          item.status !== "Removed" &&
-          Number(
-            item.quantitySold || 0
-          ) <
-            Number(
-              item.quantity || 0
-            )
+          item.status !==
+            "Sold" &&
+          item.status !==
+            "Removed" &&
+          item.quantitySold <
+            item.quantity
       ).length,
 
     listed:
       items.filter(
         (item) =>
-          item.status === "Listed"
+          item.status ===
+          "Listed"
       ).length,
 
     sold:
       items.filter(
         (item) =>
-          item.status === "Sold"
+          item.status ===
+          "Sold"
       ).length,
   };
 
@@ -432,7 +502,7 @@ export default function InventoryPage() {
      DELETE
   ======================================================= */
 
-  function removeItem(
+  async function removeItem(
     id: string
   ) {
     const item =
@@ -449,7 +519,7 @@ export default function InventoryPage() {
       window.confirm(
         `Remove "${getTitle(
           item
-        )}" from inventory?\n\nThis removes the saved inventory item from this browser.`
+        )}" completely?\n\nThis removes the saved item from this browser.`
       );
 
     if (!confirmed) {
@@ -459,7 +529,9 @@ export default function InventoryPage() {
     setDeletingId(id);
 
     try {
-      deleteInventoryItem(id);
+      deleteInventoryItem(
+        id
+      );
 
       refresh();
     } catch (error) {
@@ -468,7 +540,9 @@ export default function InventoryPage() {
         error
       );
     } finally {
-      setDeletingId(null);
+      setDeletingId(
+        null
+      );
     }
   }
 
@@ -482,13 +556,14 @@ export default function InventoryPage() {
     >
       <div className="mx-auto min-h-screen max-w-[1800px]">
 
-        {/* HEADER */}
+        {/* =================================================
+            HEADER
+        ================================================= */}
 
         <header className="border-b border-zinc-200/70 bg-white">
-          <div className="flex min-h-[88px] items-center justify-between gap-4 px-5 sm:px-8 xl:px-10">
+          <div className="flex min-h-[82px] items-center justify-between gap-4 px-4 sm:px-8 xl:px-10">
 
             <div>
-
               <Link
                 href="/"
                 className="text-xs font-semibold text-[#5b47cc] hover:text-[#4936b5]"
@@ -496,21 +571,20 @@ export default function InventoryPage() {
                 ← Dashboard
               </Link>
 
-              <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-[28px]">
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight">
                 Inventory
               </h1>
 
-              <p className="mt-1 text-sm text-zinc-400">
+              <p className="mt-1 hidden text-sm text-zinc-400 sm:block">
                 Everything you currently own and have available to sell.
               </p>
-
             </div>
 
             <Link
               href="/add"
-              className="inline-flex items-center gap-2 rounded-full bg-[#5540c8] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#4936b5]"
+              className="inline-flex shrink-0 items-center gap-2 rounded-full bg-[#5540c8] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#4936b5]"
             >
-              <span className="text-lg">
+              <span className="text-lg leading-none">
                 ＋
               </span>
 
@@ -520,13 +594,13 @@ export default function InventoryPage() {
           </div>
         </header>
 
-        {/* CONTENT */}
+        <div className="p-4 sm:p-8 xl:p-10">
 
-        <div className="p-5 sm:p-8 xl:p-10">
+          {/* =================================================
+              STATS
+          ================================================= */}
 
-          {/* STATS */}
-
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
 
             <StatCard
               label="Total Items"
@@ -558,13 +632,15 @@ export default function InventoryPage() {
 
           </div>
 
-          {/* FILTERS */}
+          {/* =================================================
+              FILTERS
+          ================================================= */}
 
-          <section className="mt-5 rounded-[24px] border border-zinc-200/80 bg-white p-4 shadow-[0_2px_8px_rgba(0,0,0,0.025)]">
+          <section className="mt-4 rounded-[20px] border border-zinc-200/80 bg-white p-3 shadow-[0_2px_8px_rgba(0,0,0,0.025)]">
 
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
 
-              <div className="flex flex-wrap gap-2">
+              <div className="flex gap-1.5 overflow-x-auto pb-1">
 
                 {filters.map(
                   (item) => (
@@ -576,9 +652,8 @@ export default function InventoryPage() {
                           item
                         )
                       }
-                      className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
-                        filter ===
-                        item
+                      className={`whitespace-nowrap rounded-full px-3 py-1.5 text-[11px] font-semibold transition ${
+                        filter === item
                           ? "bg-zinc-900 text-white"
                           : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"
                       }`}
@@ -592,20 +667,22 @@ export default function InventoryPage() {
 
               <div className="relative w-full xl:max-w-sm">
 
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400">
+                <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400">
                   ⌕
                 </span>
 
                 <input
                   value={search}
-                  onChange={(event) =>
+                  onChange={(
+                    event
+                  ) =>
                     setSearch(
                       event.target
                         .value
                     )
                   }
                   placeholder="Search inventory..."
-                  className="w-full rounded-full border border-zinc-200 bg-zinc-50 py-3 pl-10 pr-4 text-sm outline-none transition focus:border-[#5540c8] focus:bg-white"
+                  className="w-full rounded-full border border-zinc-200 bg-zinc-50 py-2.5 pl-9 pr-4 text-xs outline-none transition focus:border-[#5540c8] focus:bg-white"
                 />
 
               </div>
@@ -614,20 +691,22 @@ export default function InventoryPage() {
 
           </section>
 
-          {/* INVENTORY */}
+          {/* =================================================
+              INVENTORY
+          ================================================= */}
 
-          <section className="mt-5">
+          <section className="mt-4">
 
             {visibleItems.length ===
             0 ? (
 
-              <div className="rounded-[24px] border border-zinc-200/80 bg-white px-6 py-20 text-center shadow-[0_2px_8px_rgba(0,0,0,0.025)]">
+              <div className="rounded-[20px] border border-zinc-200/80 bg-white px-6 py-16 text-center shadow-[0_2px_8px_rgba(0,0,0,0.025)]">
 
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[#eeeafa] text-2xl text-[#5945c7]">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#eeeafa] text-xl text-[#5945c7]">
                   ▣
                 </div>
 
-                <h2 className="mt-5 text-lg font-semibold">
+                <h2 className="mt-4 text-lg font-semibold">
                   No inventory found
                 </h2>
 
@@ -636,35 +715,31 @@ export default function InventoryPage() {
                   filter !==
                     "All"
                     ? "Try changing your search or filter."
-                    : "Save an item to inventory and it will appear here."}
+                    : "Analyse and save your first item to see it here."}
                 </p>
 
                 {!search &&
                   filter ===
                     "All" && (
-
                     <Link
                       href="/add"
-                      className="mt-5 inline-flex rounded-full bg-[#5540c8] px-5 py-3 text-sm font-semibold text-white"
+                      className="mt-4 inline-flex rounded-full bg-[#5540c8] px-5 py-2.5 text-sm font-semibold text-white"
                     >
                       ＋ Add Item
                     </Link>
-
                   )}
 
               </div>
 
             ) : (
 
-              <div className="overflow-hidden rounded-[24px] border border-zinc-200/80 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.025)]">
+              <div className="overflow-hidden rounded-[20px] border border-zinc-200/80 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.025)]">
 
-                {/* DESKTOP HEADER */}
+                {/* =================================================
+                    DESKTOP HEADER
+                ================================================= */}
 
-                <div className="hidden grid-cols-[72px_minmax(220px,1fr)_130px_130px_110px_130px_110px] gap-4 border-b border-zinc-200 bg-zinc-50 px-5 py-3 text-[10px] font-bold uppercase tracking-[0.08em] text-zinc-400 md:grid">
-
-                  <span>
-                    Photo
-                  </span>
+                <div className="hidden border-b border-zinc-100 bg-zinc-50/70 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.08em] text-zinc-400 lg:grid lg:grid-cols-[minmax(280px,2.5fr)_110px_110px_100px_130px_70px_70px] lg:items-center lg:gap-4">
 
                   <span>
                     Item
@@ -686,9 +761,17 @@ export default function InventoryPage() {
                     Status
                   </span>
 
+                  <span>
+                    Stock
+                  </span>
+
                   <span />
 
                 </div>
+
+                {/* =================================================
+                    ROWS
+                ================================================= */}
 
                 <div className="divide-y divide-zinc-100">
 
@@ -705,18 +788,165 @@ export default function InventoryPage() {
                           item
                         );
 
-                      return (
+                      const remaining =
+                        Math.max(
+                          0,
+                          Number(
+                            item.quantity ||
+                              0
+                          ) -
+                            Number(
+                              item.quantitySold ||
+                                0
+                            )
+                        );
 
-                        <article
+                      const model =
+                        getModel(
+                          item
+                        );
+
+                      return (
+                        <div
                           key={
                             item.id
                           }
-                          className="grid gap-4 px-4 py-4 transition hover:bg-zinc-50 sm:px-5 md:grid-cols-[72px_minmax(220px,1fr)_130px_130px_110px_130px_110px] md:items-center"
+                          className="group px-3 py-2.5 transition hover:bg-zinc-50/80 sm:px-4"
                         >
 
-                          {/* IMAGE */}
+                          {/* =================================================
+                              DESKTOP
+                          ================================================= */}
 
-                          <div className="h-16 w-16 overflow-hidden rounded-xl border border-zinc-200 bg-zinc-100">
+                          <div className="hidden lg:grid lg:grid-cols-[minmax(280px,2.5fr)_110px_110px_100px_130px_70px_70px] lg:items-center lg:gap-4">
+
+                            {/* ITEM */}
+
+                            <div className="flex min-w-0 items-center gap-3">
+
+                              <InventoryImage
+                                item={
+                                  item
+                                }
+                              />
+
+                              <div className="min-w-0">
+
+                                <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-zinc-400">
+                                  {getBrand(
+                                    item
+                                  )}
+                                </p>
+
+                                <h2 className="mt-0.5 truncate text-sm font-semibold text-zinc-800">
+                                  {getTitle(
+                                    item
+                                  )}
+                                </h2>
+
+                                {model && (
+                                  <p className="mt-0.5 truncate text-[10px] text-zinc-400">
+                                    {model}
+                                  </p>
+                                )}
+
+                              </div>
+
+                            </div>
+
+                            {/* PURCHASE */}
+
+                            <div>
+                              <p className="text-[10px] text-zinc-400">
+                                Purchase
+                              </p>
+
+                              <p className="mt-0.5 text-sm font-semibold">
+                                {money(
+                                  item.purchasePrice
+                                )}
+                              </p>
+                            </div>
+
+                            {/* SELL */}
+
+                            <div>
+                              <p className="text-[10px] text-zinc-400">
+                                Sale
+                              </p>
+
+                              <p className="mt-0.5 text-sm font-semibold">
+                                {money(
+                                  salePrice
+                                )}
+                              </p>
+                            </div>
+
+                            {/* ROI */}
+
+                            <div>
+                              <p className="text-[10px] text-zinc-400">
+                                ROI
+                              </p>
+
+                              <p
+                                className={`mt-0.5 text-sm font-semibold ${
+                                  roi !== null &&
+                                  roi >= 0
+                                    ? "text-emerald-600"
+                                    : "text-red-500"
+                                }`}
+                              >
+                                {roi !== null
+                                  ? `${roi.toFixed(
+                                      1
+                                    )}%`
+                                  : "—"}
+                              </p>
+                            </div>
+
+                            {/* STATUS */}
+
+                            <div>
+                              <StatusPill
+                                status={
+                                  item.status
+                                }
+                              />
+                            </div>
+
+                            {/* STOCK */}
+
+                            <div>
+                              <p className="text-[10px] text-zinc-400">
+                                Stock
+                              </p>
+
+                              <p className="mt-0.5 text-sm font-semibold">
+                                {remaining}
+                              </p>
+                            </div>
+
+                            {/* VIEW */}
+
+                            <div className="flex justify-end">
+
+                              <Link
+                                href={`/listings/${item.id}`}
+                                className="rounded-full border border-zinc-200 px-3 py-1.5 text-[10px] font-semibold text-zinc-600 transition hover:bg-zinc-100"
+                              >
+                                View
+                              </Link>
+
+                            </div>
+
+                          </div>
+
+                          {/* =================================================
+                              MOBILE
+                          ================================================= */}
+
+                          <div className="flex items-center gap-3 lg:hidden">
 
                             <InventoryImage
                               item={
@@ -724,144 +954,79 @@ export default function InventoryPage() {
                               }
                             />
 
-                          </div>
+                            <div className="min-w-0 flex-1">
 
-                          {/* ITEM */}
+                              <div className="flex items-center gap-2">
 
-                          <div className="min-w-0">
+                                <p className="truncate text-[10px] font-bold uppercase tracking-[0.06em] text-zinc-400">
+                                  {getBrand(
+                                    item
+                                  )}
+                                </p>
 
-                            <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-zinc-400">
-                              {getBrand(
-                                item
-                              )}
-                            </p>
+                                <StatusPill
+                                  status={
+                                    item.status
+                                  }
+                                />
 
-                            <h2 className="mt-1 line-clamp-2 text-sm font-semibold text-zinc-900">
-                              {getTitle(
-                                item
-                              )}
-                            </h2>
+                              </div>
 
-                            <p className="mt-1 text-xs text-zinc-400">
-                              {item.category ||
-                                item.condition ||
-                                "Item"}
-                            </p>
+                              <h2 className="mt-0.5 truncate text-sm font-semibold">
+                                {getTitle(
+                                  item
+                                )}
+                              </h2>
 
-                          </div>
+                              <div className="mt-1.5 flex items-center gap-3 overflow-hidden text-[10px]">
 
-                          {/* PURCHASE */}
+                                <span className="whitespace-nowrap text-zinc-400">
+                                  Buy{" "}
+                                  <strong className="text-zinc-700">
+                                    {money(
+                                      item.purchasePrice
+                                    )}
+                                  </strong>
+                                </span>
 
-                          <div>
+                                <span className="whitespace-nowrap text-zinc-400">
+                                  Sell{" "}
+                                  <strong className="text-zinc-700">
+                                    {money(
+                                      salePrice
+                                    )}
+                                  </strong>
+                                </span>
 
-                            <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-zinc-400 md:hidden">
-                              Purchase
-                            </p>
+                                <span
+                                  className={`whitespace-nowrap font-semibold ${
+                                    roi !== null &&
+                                    roi >= 0
+                                      ? "text-emerald-600"
+                                      : "text-red-500"
+                                  }`}
+                                >
+                                  {roi !== null
+                                    ? `${roi.toFixed(
+                                        0
+                                      )}% ROI`
+                                    : "—"}
+                                </span>
 
-                            <p className="mt-1 font-semibold">
-                              {money(
-                                item.purchasePrice
-                              )}
-                            </p>
+                              </div>
 
-                          </div>
-
-                          {/* SELL PRICE */}
-
-                          <div>
-
-                            <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-zinc-400 md:hidden">
-                              Sell Price
-                            </p>
-
-                            <p className="mt-1 font-semibold">
-                              {money(
-                                salePrice
-                              )}
-                            </p>
-
-                          </div>
-
-                          {/* ROI */}
-
-                          <div>
-
-                            <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-zinc-400 md:hidden">
-                              ROI
-                            </p>
-
-                            <p
-                              className={`mt-1 font-semibold ${
-                                roi !=
-                                  null &&
-                                roi >=
-                                  0
-                                  ? "text-emerald-600"
-                                  : "text-red-500"
-                              }`}
-                            >
-                              {roi !=
-                              null
-                                ? `${roi.toFixed(
-                                    1
-                                  )}%`
-                                : "—"}
-                            </p>
-
-                          </div>
-
-                          {/* STATUS */}
-
-                          <div>
-
-                            <StatusPill
-                              status={
-                                item.status
-                              }
-                            />
-
-                          </div>
-
-                          {/* VIEW */}
-
-                          <div className="flex justify-end">
+                            </div>
 
                             <Link
-                              href={`/inventory/${item.id}`}
-                              className="rounded-full border border-zinc-200 px-4 py-2 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100"
+                              href={`/listings/${item.id}`}
+                              className="shrink-0 rounded-full border border-zinc-200 px-3 py-1.5 text-[10px] font-semibold text-zinc-600 transition hover:bg-zinc-50"
                             >
                               View
                             </Link>
 
                           </div>
 
-                          {/* DELETE */}
-
-                          <div className="md:col-span-7">
-
-                            <button
-                              type="button"
-                              onClick={() =>
-                                removeItem(
-                                  item.id
-                                )
-                              }
-                              disabled={
-                                deletingId ===
-                                item.id
-                              }
-                              className="w-full rounded-xl border border-red-100 bg-red-50 px-4 py-2 text-xs font-semibold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 md:w-auto"
-                            >
-                              {deletingId ===
-                              item.id
-                                ? "Removing..."
-                                : "Remove Item"}
-                            </button>
-
-                          </div>
-
-                        </article>
-
+                        </div>
                       );
                     }
                   )}
@@ -875,10 +1040,11 @@ export default function InventoryPage() {
           </section>
 
         </div>
-
       </div>
 
-      {/* MOBILE NAV */}
+      {/* =====================================================
+          MOBILE NAV
+      ===================================================== */}
 
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200 bg-white/95 px-2 pb-[max(8px,env(safe-area-inset-bottom))] pt-2 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] backdrop-blur lg:hidden">
 
@@ -891,30 +1057,37 @@ export default function InventoryPage() {
             ["◇", "Listings", "/listings"],
             ["£", "Sales", "/sales"],
           ].map(
-            ([icon, label, href]) => (
+            ([icon, label, href]) => {
 
-              <Link
-                key={href}
-                href={href}
-                className={`flex min-h-14 flex-col items-center justify-center rounded-xl text-[10px] font-semibold transition ${
-                  href ===
-                  "/inventory"
-                    ? "bg-zinc-900 text-white"
-                    : "text-zinc-400 hover:bg-zinc-100"
-                }`}
-              >
+              const active =
+                href === "/"
+                  ? pathname === "/"
+                  : pathname.startsWith(
+                      href
+                    );
 
-                <span className="text-lg leading-none">
-                  {icon}
-                </span>
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  className={`flex min-h-12 flex-col items-center justify-center rounded-xl text-[10px] font-semibold transition ${
+                    active
+                      ? "bg-zinc-900 text-white"
+                      : "text-zinc-400 hover:bg-[#f4f4f5]"
+                  }`}
+                >
 
-                <span className="mt-1">
-                  {label}
-                </span>
+                  <span className="text-base leading-none">
+                    {icon}
+                  </span>
 
-              </Link>
+                  <span className="mt-0.5">
+                    {label}
+                  </span>
 
-            )
+                </Link>
+              );
+            }
           )}
 
         </div>
