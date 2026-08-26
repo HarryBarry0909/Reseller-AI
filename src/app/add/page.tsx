@@ -8,6 +8,7 @@ import {
   createInventoryId,
   type InventoryItem,
 } from "@/lib/inventory-store";
+import { saveImageSet } from "@/lib/listing-store";
 
 
 type SizeData = {
@@ -521,6 +522,21 @@ export default function AddItem() {
       const now =
         new Date().toISOString();
 
+      // Save the original photos into the browser image store.
+      // Inventory and Listings can then load the actual image blobs
+      // using the shared imageSetId instead of only knowing the count.
+      const imageSet = await saveImageSet(photos);
+
+      sessionStorage.setItem(
+        "reseller_ai_image_set_id",
+        imageSet.id
+      );
+
+      sessionStorage.setItem(
+        "reseller_ai_image_count",
+        String(imageSet.count)
+      );
+
       const inventoryItem: InventoryItem = {
         id: inventoryId,
         userId: user.id,
@@ -530,8 +546,8 @@ export default function AddItem() {
 
         status: "Draft",
 
-        imageSetId: null,
-        imageCount: result.photosAnalysed,
+        imageSetId: imageSet.id,
+        imageCount: imageSet.count,
 
         product: {
           ...result.product,
