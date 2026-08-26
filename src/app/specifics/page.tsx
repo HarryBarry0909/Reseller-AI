@@ -5,8 +5,11 @@ import type { ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Lexend } from "next/font/google";
 import {
+  addInventoryItem,
+  createInventoryId,
   getInventoryItem,
   updateInventoryItem,
+  type InventoryItem,
 } from "../../lib/inventory-store";
 
 /* =========================================================
@@ -708,74 +711,63 @@ export default function ItemSpecifics() {
 
   async function saveListing() {
     if (!result) {
+      setPageError("There is no analysed item to save.");
       return;
     }
 
-    const inventoryId =
-      sessionStorage.getItem("reseller_ai_inventory_id");
+    setPageError("");
 
-    if (!inventoryId) {
-      setPageError(
-        "This item does not have an Inventory record yet. Please go back to Add Item and start again."
+    try {
+      // The item should normally have been created on the Add Item page.
+      // However, if the session ID is missing or stale, create the
+      // inventory record here instead of silently failing.
+      let inventoryId =
+        sessionStorage.getItem("reseller_ai_inventory_id");
+
+      let existingItem = inventoryId
+        ? getInventoryItem(inventoryId)
+        : null;
+
+      const finalPrice = getCurrentPrice();
+
+      const imageSetId =
+        sessionStorage.getItem("reseller_ai_image_set_id");
+
+      const imageCount = Number(
+        sessionStorage.getItem("reseller_ai_image_count") || 0
       );
-      return;
-    }
 
-    const existingItem =
-      getInventoryItem(inventoryId);
+      const purchasePrice =
+        Number(config.purchasePrice || 0);
 
-    if (!existingItem) {
-      setPageError(
-        "The Inventory item could not be found. Please go back to Add Item and start again."
-      );
-      return;
-    }
+      const estimatedProfit =
+        getEstimatedProfit();
 
-    const finalPrice = getCurrentPrice();
+      const estimatedROI =
+        getEstimatedROI();
 
-    const imageSetId =
-      sessionStorage.getItem("reseller_ai_image_set_id");
+      const updatedProduct = {
+        ...result.product,
+        brand,
+        model,
+        item_type: itemType,
+        primary_colour: primaryColour,
+        secondary_colour: secondaryColour,
+        gender,
+        size: {
+          ...result.product.size,
+          detected_value: size,
+        },
+      };
 
-    const imageCount = Number(
-      sessionStorage.getItem("reseller_ai_image_count") || 0
-    );
+      const itemData = {
+        status: "Draft" as const,
 
-    const purchasePrice =
-      Number(config.purchasePrice || 0);
-
-    const estimatedProfit =
-      getEstimatedProfit();
-
-    const estimatedROI =
-      getEstimatedROI();
-
-    const updatedProduct = {
-      ...result.product,
-      brand,
-      model,
-      item_type: itemType,
-      primary_colour: primaryColour,
-      secondary_colour: secondaryColour,
-      gender,
-      size: {
-        ...result.product.size,
-        detected_value: size,
-      },
-    };
-
-    const updatedItem = updateInventoryItem(
-      inventoryId,
-      {
-        status: "Draft",
-
-        imageSetId:
-          imageSetId ||
-          existingItem.imageSetId ||
-          null,
+        imageSetId: imageSetId || existingItem?.imageSetId || null,
 
         imageCount:
           imageCount ||
-          existingItem.imageCount ||
+          existingItem?.imageCount ||
           result.photosAnalysed,
 
         product: updatedProduct,
@@ -834,20 +826,11 @@ export default function ItemSpecifics() {
           auction:
             sellingFormat !== "BUY_IT_NOW"
               ? {
-                  startPrice:
-                    Number(
-                      auctionStartPrice || 0
-                    ),
-
-                  duration:
-                    Number(auctionDuration),
-
-                  buyItNow:
-                    auctionBuyItNow
-                      ? Number(
-                          auctionBuyItNow
-                        )
-                      : null,
+                  startPrice: Number(auctionStartPrice || 0),
+                  duration: Number(auctionDuration),
+                  buyItNow: auctionBuyItNow
+                    ? Number(auctionBuyItNow)
+                    : null,
                 }
               : null,
         },
@@ -857,116 +840,116 @@ export default function ItemSpecifics() {
 
           price:
             shippingPaidBy === "BUYER"
-              ? Number(
-                  shippingPrice || 0
-                )
+              ? Number(shippingPrice || 0)
               : 0,
 
           service: shippingService,
-
           parcelSize,
-
-          weight:
-            Number(
-              parcelWeight || 0
-            ),
+          weight: Number(parcelWeight || 0),
 
           dimensions: {
-            length:
-              Number(
-                parcelLength || 0
-              ),
-
-            width:
-              Number(
-                parcelWidth || 0
-              ),
-
-            height:
-              Number(
-                parcelHeight || 0
-              ),
+            length: Number(parcelLength || 0),
+            width: Number(parcelWidth || 0),
+            height: Number(parcelHeight || 0),
           },
         },
 
-        dispatch:
-          config.dispatchTime,
+        dispatch: config.dispatchTime,
 
         packaging: {
-          type:
-            config.packagingType,
-
-          condition:
-            config.packagingCondition,
+          type: config.packagingType,
+          condition: config.packagingCondition,
         },
 
         returns: {
-          accepted:
-            returnsAccepted,
-
-          period:
-            returnsAccepted
-              ? Number(returnPeriod)
-              : null,
-
-          postage:
-            returnsAccepted
-              ? returnPostage
-              : null,
+          accepted: returnsAccepted,
+          period: returnsAccepted ? Number(returnPeriod) : null,
+          postage: returnsAccepted ? returnPostage : null,
         },
 
-        sellerStatus:
-          config.itemStatus,
-
-        additionalNotes:
-          config.additionalNotes,
+        sellerStatus: config.itemStatus,
+        additionalNotes: config.additionalNotes,
 
         purchasePrice,
-
         estimatedProfit,
-
         estimatedROI,
 
-        quantity:
-          Number(quantity) || 1,
+        quantity: Number(quantity) || 1,
+        quantitySold: existingItem?.quantitySold || 0,
+        soldPrice: existingItem?.soldPrice || null,
+        soldAt: existingItem?.soldAt || null,
+      };
 
-        quantitySold:
-          existingItem.quantitySold || 0,
+      let updatedItem: InventoryItem | null = null;
 
-        soldPrice:
-          existingItem.soldPrice || null,
+      if (existingItem && inventoryId) {
+        // Normal path: update the inventory item created by Add Item.
+        updatedItem = updateInventoryItem(
+          inventoryId,
+          itemData
+        );
+      } else {
+        // Recovery path: create the inventory item here.
+        inventoryId = createInventoryId();
 
-        soldAt:
-          existingItem.soldAt || null,
+        const now = new Date().toISOString();
+
+        const newItem: InventoryItem = {
+          id: inventoryId,
+          userId: null,
+          createdAt: now,
+          updatedAt: now,
+          ...itemData,
+          quantity: Number(quantity) || 1,
+          quantitySold: 0,
+          soldPrice: null,
+          soldAt: null,
+        };
+
+        updatedItem = addInventoryItem(newItem);
+
+        sessionStorage.setItem(
+          "reseller_ai_inventory_id",
+          inventoryId
+        );
       }
-    );
 
-    if (!updatedItem) {
-      setPageError(
-        "The Inventory item could not be updated."
+      if (!updatedItem) {
+        throw new Error(
+          "The Inventory item could not be saved. Please try again."
+        );
+      }
+
+      sessionStorage.setItem(
+        "reseller_ai_inventory",
+        JSON.stringify(updatedItem)
       );
-      return;
+
+      sessionStorage.removeItem(
+        "reseller_ai_listing"
+      );
+
+      setSaved(true);
+
+      console.log(
+        "RESELLER AI INVENTORY SAVED:",
+        updatedItem
+      );
+    } catch (error) {
+      console.error(
+        "RESELLER AI INVENTORY SAVE FAILED:",
+        error
+      );
+
+      setSaved(false);
+      setPageError(
+        error instanceof Error
+          ? error.message
+          : "Could not save this item to Inventory."
+      );
     }
-
-    // Keep the session copy for the current workflow.
-    sessionStorage.setItem(
-      "reseller_ai_inventory",
-      JSON.stringify(updatedItem)
-    );
-
-    // Remove the old listing session record so this workflow no longer
-    // creates a separate listing object.
-    sessionStorage.removeItem(
-      "reseller_ai_listing"
-    );
-
-    setSaved(true);
-
-    console.log(
-      "INVENTORY ITEM UPDATED:",
-      updatedItem
-    );
   }
+
 
   /* =======================================================
      INPUT HANDLER
